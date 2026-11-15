@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, RotateCcw, Trophy, Trash2, CalendarDays, Briefcase, Database, Download, Upload, X } from "lucide-react";
+import { Plus, RotateCcw, Trophy, Trash2, CalendarDays, Briefcase, Database, Download, Upload, X, Crown } from "lucide-react";
 import { useStore } from "@/lib/lol/store";
 import { loadManagerCareer } from "@/lib/lol/manager-career";
 import { TeamLogo } from "@/components/lol/team-logo";
@@ -213,6 +213,16 @@ function Index() {
             >
               <Trophy className="h-4 w-4" /> Hall da Fama
             </Link>
+            {!isCs2 ? (
+              <Link
+                to="/ranking"
+                search={{ game: "lol", tab: "goats" }}
+                className="flex items-center gap-2 border border-gold/60 bg-gold/10 px-4 py-2 font-display text-sm uppercase tracking-[0.22em] text-gold transition-all hover:bg-gold/20"
+                title="Ranking exclusivo dos maiores times e jogadores da história internacional do LoL"
+              >
+                <Crown className="h-4 w-4" /> GOATs
+              </Link>
+            ) : null}
             <button
               type="button"
               onClick={() => setSuperBackupOpen(true)}

@@ -320,6 +320,26 @@ export interface IntlEditionRecord {
   runnerUpRegion?: string;
 }
 
+/** Registro permanente de desempenho INTERNACIONAL de um jogador (base do ranking GOAT). */
+export interface CareerIntlPlayer {
+  ign: string;
+  real?: string;
+  country?: string;
+  role: PlayerRole;
+  teamName: string;
+  teamTag?: string;
+  worldsTitles: number;
+  msiTitles: number;
+  minorIntlTitles: number;
+  majorFinals: number;
+  intlPlayoffs: number;
+  intlMvps: number;
+  intlPlayoffMvps: number;
+  years: string[];
+  peakOverall?: number;
+  retired?: boolean;
+}
+
 /**
  * RANKING DE CARREIRA (permanente): créditos de pontos/títulos por time,
  * por jogo. Uma vez creditado, NUNCA é recalculado — resetar campeonatos,
@@ -340,6 +360,8 @@ export interface CareerLedger {
    * Base do Coeficiente de Momento + mérito/perda direta de vagas.
    */
   intlHistory?: Record<string, IntlEditionRecord[]>;
+  /** Registro permanente de conquistas e MVPs internacionais de jogadores (LoL GOATs). */
+  intlPlayers?: Record<string, CareerIntlPlayer>;
   /** Créditos já aplicados (idempotência: mesma partida/vencedor não credita 2x). */
   seen?: Record<string, true>;
   /** Controle do teto máximo de pontos (+7) ganho por time em cada edição de liga doméstica. */

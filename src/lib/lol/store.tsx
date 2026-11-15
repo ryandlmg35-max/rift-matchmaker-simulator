@@ -67,9 +67,11 @@ import {
   isGenericRoster,
   matchPlayerDeltas,
   pickStarters,
+  playerOverall,
   revertPlayerDeltas,
   stripDerivedRoster,
 } from "./players";
+import { classifyLoLIntlTournament, extractSeasonYear, playerGoatKey } from "./goats";
 import {
   advanceChampionshipToNextSplit,
   buildNextSplitChampionship,
@@ -257,10 +259,60 @@ function upsertIntlEditionPerf(
  * inflava sem limite. Limpar o placar NÃO devolve o que já foi creditado —
  * carreira é carreira.
  */
+function upsertIntlPlayerRecord(
+  ledger: CareerLedger,
+  seed: {
+    ign: string;
+    real?: string;
+    country?: string;
+    role: Match["mvp"] extends { role: infer R } | undefined ? R : never;
+    teamName: string;
+    teamTag?: string;
+    peakOverall?: number;
+  },
+  year: string,
+  delta: {
+    worldsTitles?: number;
+    msiTitles?: number;
+    minorIntlTitles?: number;
+    majorFinals?: number;
+    intlMvps?: number;
+    intlPlayoffMvps?: number;
+  },
+): CareerLedger {
+  const key = playerGoatKey(seed.ign);
+  if (!key) return ledger;
+  const map = { ...(ledger.intlPlayers ?? {}) };
+  const prev = map[key];
+  const years = Array.from(new Set([...(prev?.years ?? []), year]));
+  map[key] = {
+    ign: prev?.ign ?? seed.ign,
+    real: seed.real ?? prev?.real,
+    country: seed.country ?? prev?.country,
+    role: prev?.role ?? seed.role,
+    teamName: seed.teamName || prev?.teamName || "—",
+    teamTag: seed.teamTag ?? prev?.teamTag,
+    worldsTitles: (prev?.worldsTitles ?? 0) + (delta.worldsTitles ?? 0),
+    msiTitles: (prev?.msiTitles ?? 0) + (delta.msiTitles ?? 0),
+    minorIntlTitles: (prev?.minorIntlTitles ?? 0) + (delta.minorIntlTitles ?? 0),
+    majorFinals: (prev?.majorFinals ?? 0) + (delta.majorFinals ?? 0),
+    intlPlayoffs: prev?.intlPlayoffs ?? 0,
+    intlMvps: (prev?.intlMvps ?? 0) + (delta.intlMvps ?? 0),
+    intlPlayoffMvps: (prev?.intlPlayoffMvps ?? 0) + (delta.intlPlayoffMvps ?? 0),
+    years,
+    peakOverall:
+      seed.peakOverall && (!prev?.peakOverall || seed.peakOverall > prev.peakOverall)
+        ? seed.peakOverall
+        : prev?.peakOverall,
+    retired: prev?.retired,
+  };
+  return { ...ledger, intlPlayers: map };
+}
+
 function creditMatch(
   ledger: CareerLedger,
   c: Championship,
-  match: Pick<Match, "id" | "teamAId" | "teamBId" | "bye">,
+  match: Pick<Match, "id" | "teamAId" | "teamBId" | "bye" | "mvp">,
   winnerId: string,
   isPlayoff: boolean,
 ): CareerLedger {
@@ -431,6 +483,38 @@ function creditMatch(
         stage,
       });
     }
+
+    if (game === "lol" && match.mvp && classifyLoLIntlTournament(c.name)) {
+      const mvpKey = playerGoatKey(match.mvp.playerName);
+      const seenMvpKey = `intlmvp:${match.id}:${mvpKey}`;
+      if (!result.seen?.[seenMvpKey]) {
+        const mvpTeam = pool.find((t) => t.id === match.mvp?.teamId);
+        const mvpPlayer = mvpTeam?.roster?.find(
+          (p) => playerGoatKey(p.ign) === mvpKey || p.id === match.mvp?.playerId,
+        );
+        const year = extractSeasonYear(c.season, c.name);
+        result = upsertIntlPlayerRecord(
+          {
+            ...result,
+            seen: { ...(result.seen ?? {}), [seenMvpKey]: true },
+          },
+          {
+            ign: match.mvp.playerName,
+            real: mvpPlayer?.real,
+            country: mvpPlayer?.country,
+            role: match.mvp.role,
+            teamName: mvpTeam?.name ?? winner.name,
+            teamTag: mvpTeam?.tag ?? winner.tag,
+            peakOverall: mvpPlayer ? playerOverall(mvpPlayer) : undefined,
+          },
+          year,
+          {
+            intlMvps: 1,
+            intlPlayoffMvps: isPlayoff ? 1 : 0,
+          },
+        );
+      }
+    }
   }
   return result;
 }
@@ -558,6 +642,43 @@ function creditBonus(
         setChampion: kind === "title",
         setRunnerUp: kind === "runnerup",
       });
+    }
+
+    const intlTier = game === "lol" ? classifyLoLIntlTournament(c.name) : null;
+    const rosterTeam = "roster" in team && Array.isArray(team.roster) ? (team as Team) : undefined;
+    if (intlTier && rosterTeam && (rosterTeam.roster?.length ?? 0) > 0) {
+      const year = extractSeasonYear(canonicalLabel, c.name);
+      const starters = pickStarters(rosterTeam);
+      for (const p of starters) {
+        const pKey = playerGoatKey(p.ign);
+        const seenPKey = `intlplayer:${c.id}:${kind}:${pKey}`;
+        if (result.seen?.[seenPKey]) continue;
+        result = upsertIntlPlayerRecord(
+          {
+            ...result,
+            seen: { ...(result.seen ?? {}), [seenPKey]: true },
+          },
+          {
+            ign: p.ign,
+            real: p.real,
+            country: p.country,
+            role: p.role,
+            teamName: rosterTeam.name,
+            teamTag: rosterTeam.tag,
+            peakOverall: playerOverall(p),
+          },
+          year,
+          kind === "title"
+            ? {
+                worldsTitles: intlTier === "worlds" ? 1 : 0,
+                msiTitles: intlTier === "msi" ? 1 : 0,
+                minorIntlTitles: intlTier === "minor" ? 1 : 0,
+              }
+            : {
+                majorFinals: intlTier === "worlds" || intlTier === "msi" ? 1 : 0,
+              },
+        );
+      }
     }
   }
   return result;
@@ -3126,6 +3247,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               ...(prev.intlHistory ?? {}),
               [targetGame]: [],
             },
+            ...(targetGame === "lol" ? { intlPlayers: {} } : {}),
             seen: {},
           };
         }

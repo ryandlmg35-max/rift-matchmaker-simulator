@@ -7,19 +7,23 @@ import type { Championship, Team } from "@/lib/lol/types";
 import { canonicalTournamentName, computeRegionSlots, getOfficialRegionRanking, normalizeRegion } from "@/lib/lol/international";
 import { RegionalPowerChart } from "@/components/lol/regional-power-chart";
 import { TeamProfileDrawer } from "@/components/lol/team-profile-drawer";
+import { LolGoatsView } from "@/components/lol/lol-goats-view";
 import { computeHeadToHead } from "@/lib/lol/h2h";
 
-type Search = { game?: "lol" | "cs2" };
+type Search = { game?: "lol" | "cs2"; tab?: "hall" | "goats" };
 
 export const Route = createFileRoute("/ranking")({
   component: RankingPage,
   validateSearch: (s: Record<string, unknown>): Search => ({
     game: s.game === "cs2" ? "cs2" : "lol",
+    tab: s.tab === "goats" ? "goats" : "hall",
   }),
 });
 
 function RankingPage() {
-  const { game = "lol" } = Route.useSearch();
+  const { game = "lol", tab = "hall" } = Route.useSearch();
+  const [subTab, setSubTab] = useState<"hall" | "goats">(tab);
+  const activeTab = game === "lol" ? subTab : "hall";
   const { career, championships, hydrated, resetCareer } = useStore();
 
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -213,6 +217,41 @@ function RankingPage() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-12 px-6 py-10">
+        {game === "lol" ? (
+          <div className="flex flex-wrap items-center gap-2 border-b border-gold/30 pb-3">
+            <button
+              type="button"
+              onClick={() => setSubTab("hall")}
+              className={`flex items-center gap-2 border px-4 py-2 font-display text-xs uppercase tracking-[0.2em] transition-all ${
+                activeTab === "hall"
+                  ? "border-gold bg-gold text-ink font-bold"
+                  : "border-border bg-black/40 text-muted-foreground hover:border-gold/50 hover:text-bone"
+              }`}
+            >
+              <Trophy className="h-4 w-4" /> Hall da Fama & Ranking
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubTab("goats")}
+              className={`flex items-center gap-2 border px-4 py-2 font-display text-xs uppercase tracking-[0.2em] transition-all ${
+                activeTab === "goats"
+                  ? "border-gold bg-gold text-ink font-bold"
+                  : "border-border bg-black/40 text-muted-foreground hover:border-gold/50 hover:text-gold"
+              }`}
+            >
+              <Crown className="h-4 w-4" /> GOATs (Lendas Históricas)
+            </button>
+          </div>
+        ) : null}
+
+        {activeTab === "goats" ? (
+          <LolGoatsView
+            career={career}
+            championships={championships}
+            onSelectTeam={setSelectedProfileTeam}
+          />
+        ) : (
+          <>
         {resetSuccess ? (
           <div className="flex items-center gap-2 border border-emerald-500/60 bg-emerald-500/10 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-emerald-400 animate-in fade-in">
             <Check className="h-4 w-4 shrink-0" />
@@ -780,6 +819,8 @@ function RankingPage() {
             </table>
           </div>
         </section>
+          </>
+        )}
       </main>
 
       {/* Modal de Confirmação para Resetar Hall da Fama */}
