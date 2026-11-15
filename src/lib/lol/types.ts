@@ -181,6 +181,8 @@ export interface PlayoffsConfig {
   defaultBestOf: BestOf;
   finalBestOf: BestOf;
   bracketReset: boolean;
+  /** Em eliminação dupla, omite a Grande Final (vencedores da Upper e Lower classificam direto). */
+  noGrandFinal?: boolean;
   /** "auto" (padrão) gera a chave sozinho; "custom" usa `custom`. */
   mode?: "auto" | "custom";
   custom?: CustomBracketSpec;

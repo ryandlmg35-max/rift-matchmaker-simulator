@@ -319,6 +319,7 @@ function creditMatch(
   match: Pick<Match, "id" | "teamAId" | "teamBId" | "bye" | "mvp">,
   winnerId: string,
   isPlayoff: boolean,
+  isIntlPlayIn = false,
 ): CareerLedger {
   if ((c.countsTowardsRanking ?? true) === false) return ledger;
   // Copa do Mundo de Seleções não pontua no ranking de clubes nem nas vagas internacionais
@@ -380,10 +381,10 @@ function creditMatch(
   let lossPoints: number;
 
   if (isIntl) {
-    const baseWin = isPlayoff ? 5 : 3;
+    const baseWin = isIntlPlayIn ? 3 : isPlayoff ? 5 : 3;
     // Vitória contra time de uma das 2 melhores regiões concede bônus de gigante (+3 pts base):
     winPoints = Math.round((baseWin + (beatTopRegion ? 3 : 0)) * mult);
-    lossPoints = Math.round((isPlayoff ? 1 : 2) * mult);
+    lossPoints = Math.round((isIntlPlayIn ? 1 : isPlayoff ? 1 : 2) * mult);
   } else {
     // Em liga doméstica, os pontos são reduzidos e o ganho total no campeonato nunca passa de 7 pontos
     const rawWin = isPlayoff ? 2 : 1;
@@ -467,10 +468,19 @@ function creditMatch(
     // Atualiza o histórico por edição (Coeficiente de Momento)
     const isMajor = detectInternationalLevel(c) === "major";
     const winCoef =
-      (isPlayoff ? (isMajor ? 16 : 10) : isMajor ? 10 : 6) +
-      (beatTopRegion ? (isMajor ? 6 : 4) : 0);
-    const lossCoef = isMajor ? -4 : -2;
-    const stage: IntlRegionPerf["bestStage"] = isPlayoff ? "playoffs" : "groups";
+      (isIntlPlayIn
+        ? isMajor
+          ? 8
+          : 5
+        : isPlayoff
+          ? isMajor
+            ? 16
+            : 10
+          : isMajor
+            ? 10
+            : 6) + (beatTopRegion ? (isMajor ? 6 : 4) : 0);
+    const lossCoef = isIntlPlayIn ? (isMajor ? -2 : -1) : isMajor ? -4 : -2;
+    const stage: IntlRegionPerf["bestStage"] = !isIntlPlayIn && isPlayoff ? "playoffs" : "groups";
     if (winnerRegionNorm && winnerRegionNorm !== "OUTROS") {
       result = upsertIntlEditionPerf(result, c, winnerRegionNorm, {
         wins: 1,
@@ -1975,11 +1985,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // Fama: nem pontos, nem ELO, nem histórico. Ele existe só para
           // classificar para o evento principal.
           const isIntlPlayIn = !!phase?.internationalPlayIn;
-          if (phase && target && target.teamAId && target.teamBId && !target.bye && !isIntlPlayIn) {
+          if (phase && target && target.teamAId && target.teamBId && !target.bye) {
             const isPlayoff = phase.kind === "bracket";
-            setCareer((prev) => creditMatch(prev, champ, target, winnerId, isPlayoff));
-            // Se for a partida decisiva da Série A: título + vice na carreira.
-            const lastBracket = [...champ.phases].reverse().find((p) => p.kind === "bracket");
+            setCareer((prev) => creditMatch(prev, champ, target, winnerId, isPlayoff, isIntlPlayIn));
+            // Se for a partida decisiva da Série A: título + vice na carreira (nunca no play-in).
+            const lastBracket = !isIntlPlayIn
+              ? [...champ.phases].reverse().find((p) => p.kind === "bracket")
+              : undefined;
             if (lastBracket && lastBracket.id === phaseId) {
               const decisive = [...lastBracket.matches].sort(
                 (a, b) =>
@@ -2242,9 +2254,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (division === 1) {
           const phase = champ.phases.find((p) => p.id === phaseId);
           const isIntlPlayIn = !!phase?.internationalPlayIn;
-          if (phase && !isIntlPlayIn) {
+          if (phase) {
             const isPlayoff = phase.kind === "bracket";
-            const lastBracket = [...champ.phases].reverse().find((p) => p.kind === "bracket");
+            const lastBracket = !isIntlPlayIn
+              ? [...champ.phases].reverse().find((p) => p.kind === "bracket")
+              : undefined;
             const decisive =
               lastBracket && lastBracket.id === phaseId
                 ? [...lastBracket.matches].sort(
@@ -2258,7 +2272,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               for (const res of results) {
                 const target = phase.matches.find((m) => m.id === res.matchId);
                 if (target && target.teamAId && target.teamBId && !target.bye && res.winnerId) {
-                  nextCareer = creditMatch(nextCareer, champ, target, res.winnerId, isPlayoff);
+                  nextCareer = creditMatch(
+                    nextCareer,
+                    champ,
+                    target,
+                    res.winnerId,
+                    isPlayoff,
+                    isIntlPlayIn,
+                  );
                   if (decisive?.id === res.matchId) {
                     const pool = [...champ.teams, ...(champ.formerTeams ?? [])];
                     const champion = pool.find((t) => t.id === res.winnerId);

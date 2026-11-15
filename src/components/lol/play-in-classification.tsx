@@ -43,11 +43,16 @@ export function PlayInClassification({
     (m) => (m.teamAId && m.teamBId && !m.winnerId) || m.pendingA || m.pendingB,
   ).length;
 
+  const isDoubleNoGrand =
+    phase.kind === "bracket" &&
+    (phase.config as { type?: string; noGrandFinal?: boolean }).type === "double" &&
+    !!(phase.config as { noGrandFinal?: boolean }).noGrandFinal;
+
   return (
     <div className="noise-layer border-2 border-gold/50 bg-card/60 p-4 shadow-[4px_4px_0_0_var(--gold)]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-ink/60 pb-2">
         <h3 className="font-display text-sm uppercase tracking-widest text-gold">
-          Classificação do play-in
+          {isDoubleNoGrand ? "Tabela de classificação · Play-in (sem final)" : "Classificação do play-in"}
         </h3>
         <span className="font-display text-[10px] uppercase tracking-widest text-muted-foreground">
           {finished
@@ -59,7 +64,9 @@ export function PlayInClassification({
       {!finished ? (
         <p className="mt-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-muted-foreground">
           <Timer className="h-3.5 w-3.5 text-gold" />
-          {`Classificação só é fechada no fim do play-in — ${limit} vaga(s) para ${targetName}.`}
+          {isDoubleNoGrand
+            ? `Mini-playoff de dupla eliminação sem final — os ${limit} classificados avançam direto para ${targetName}.`
+            : `Classificação só é fechada no fim do play-in — ${limit} vaga(s) para ${targetName}.`}
         </p>
       ) : null}
 

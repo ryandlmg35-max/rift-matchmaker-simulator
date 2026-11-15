@@ -1233,28 +1233,24 @@ export function playInStructure(playInCount: number, qualifiersToMain: number): 
     };
   }
 
-  // 2 grupos somente quando houver pelo menos 8 times (no mínimo 4 times por grupo).
-  // Com menos de 8 times (ex: 4, 5, 6 times), é sempre GRUPO ÚNICO onde todos se
-  // enfrentam (round-robin), garantindo que nenhum time dispute só 1 partida.
-  const groupCount = playInCount >= 8 && qualifiersToMain % 2 === 0 ? 2 : 1;
-  const qualifiersPerGroup = Math.max(1, Math.round(qualifiersToMain / groupCount));
-  const teamsPerGroup = Math.max(1, Math.floor(playInCount / groupCount));
-  // GSL (dupla eliminação) só quando há 4 times por grupo em 2 grupos (ex: 8 times no total).
-  const format: "gsl" | "round-robin" = groupCount >= 2 && teamsPerGroup === 4 ? "gsl" : "round-robin";
+  // Mini-playoff de dupla eliminação SEM Grande Final: quem vence a Final Superior
+  // e a Final Inferior (ou os top `qualifiersToMain`) garante vaga direta na fase principal.
+  let slots = 4;
+  while (slots < Math.max(4, playInCount)) slots *= 2;
   return {
-    kind: "groups",
+    kind: "bracket",
     config: {
-      kind: "groups",
-      groupCount,
-      format,
-      qualifiersPerGroup,
-      bestOf: 3,
-      // Fallback sem GSL: round-robin simples (o grupo classifica por
-      // vitórias; o desempate é derrota).
-      doubleRoundRobin: false,
+      kind: "bracket",
+      slots,
+      type: "double",
+      defaultBestOf: 3,
+      finalBestOf: 3,
+      bracketReset: false,
+      noGrandFinal: true,
+      mode: "auto",
     },
-    groupCount,
-    qualifiersPerGroup,
+    groupCount: 1,
+    qualifiersPerGroup: qualifiersToMain,
     deciderLabel: null,
   };
 }

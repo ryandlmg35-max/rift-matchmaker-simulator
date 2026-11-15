@@ -260,6 +260,7 @@ export function generateDoubleElim(
   defaultBo: BestOf,
   finalBo: BestOf,
   bracketReset: boolean,
+  noGrandFinal?: boolean,
 ): Match[] {
   const size = nextPow2(slots);
   const ubRounds = Math.log2(size);
@@ -349,6 +350,15 @@ export function generateDoubleElim(
         m.loserNextMatchId = lower[lbMinorIdx][idx]?.id ?? null;
       });
     }
+  }
+
+  if (noGrandFinal) {
+    const ubFinal = upper[upper.length - 1]?.[0];
+    const lbFinal = lower[lower.length - 1]?.[0];
+    if (ubFinal) ubFinal.roundName = "Final Superior (Vaga)";
+    if (lbFinal) lbFinal.roundName = "Final Inferior (Vaga)";
+    matches.push(...upper.flat(), ...lower.flat());
+    return matches;
   }
 
   // Grand final: winner UB Final vs winner LB Final
@@ -735,6 +745,48 @@ export function getBracketStandings(phase: Phase): string[] {
     }
   }
 
+  const hasGrandOrReset = phase.matches.some(
+    (m) => m.bracketSide === "grand" || m.bracketSide === "reset",
+  );
+  const hasLower = phase.matches.some((m) => m.bracketSide === "lower");
+  if (!hasGrandOrReset && hasLower) {
+    const ubFinals = phase.matches
+      .filter(
+        (m) =>
+          m.bracketSide === "upper" &&
+          !m.nextMatchId &&
+          m.winnerId &&
+          m.teamAId &&
+          m.teamBId,
+      )
+      .sort((a, b) => (b.round ?? 0) - (a.round ?? 0));
+    const lbFinals = phase.matches
+      .filter(
+        (m) =>
+          m.bracketSide === "lower" &&
+          !m.nextMatchId &&
+          m.winnerId &&
+          m.teamAId &&
+          m.teamBId,
+      )
+      .sort((a, b) => (b.round ?? 0) - (a.round ?? 0));
+
+    const out: string[] = [];
+    for (const m of ubFinals) {
+      if (m.winnerId && !out.includes(m.winnerId)) out.push(m.winnerId);
+    }
+    for (const m of lbFinals) {
+      if (m.winnerId && !out.includes(m.winnerId)) out.push(m.winnerId);
+    }
+    const pushed = new Set(out);
+    const rest = Array.from(lastLoss.entries())
+      .filter(([id]) => !pushed.has(id))
+      .sort((a, b) => bracketLossScore(b[1]) - bracketLossScore(a[1]) || a[0].localeCompare(b[0]))
+      .map(([id]) => id);
+    out.push(...rest);
+    return out;
+  }
+
   const finalMatch = phase.matches
     .filter(
       (m) =>
@@ -912,7 +964,13 @@ export function buildPhaseMatches(
   const slots = teamIdsForPhase.length > 0 ? teamIdsForPhase.length + reservedSlots : config.slots;
   const bracket =
     config.type === "double"
-      ? generateDoubleElim(slots, config.defaultBestOf, config.finalBestOf, config.bracketReset)
+      ? generateDoubleElim(
+          slots,
+          config.defaultBestOf,
+          config.finalBestOf,
+          config.bracketReset,
+          config.noGrandFinal,
+        )
       : generateSingleElim(slots, config.defaultBestOf, config.finalBestOf);
   const seeded = seedBracket(bracket, teamIdsForPhase, reservedSlots);
   return teamIdsForPhase.length > 0 ? resolveByes(seeded) : seeded;
