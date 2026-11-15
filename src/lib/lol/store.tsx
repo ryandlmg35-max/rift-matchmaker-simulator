@@ -1136,6 +1136,13 @@ interface StoreCtx {
   /** Preenche a primeira fase (vazia) de uma série com os times da própria série. */
   seedPhaseTeams: (championshipId: string, phaseId: string) => void;
   updateTeam: (championshipId: string, team: Team) => void;
+  /** Atualiza o elenco de um time em todos os campeonatos do mesmo jogo (contratação/demissão manual). */
+  controlTeamRoster: (
+    game: GameId,
+    teamName: string,
+    nextRoster: Player[],
+    opts?: { removePlayerIgnFromOthers?: string },
+  ) => void;
   assignSlotTeam: (
     championshipId: string,
     phaseId: string,
@@ -2838,6 +2845,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const controlTeamRoster = useCallback<StoreCtx["controlTeamRoster"]>(
+    (game, teamName, nextRoster, opts) => {
+      const targetKey = normKey(teamName);
+      const removeKey = opts?.removePlayerIgnFromOthers?.trim().toLowerCase() || "";
+      const starterIgns = nextRoster.filter((p) => !p.sub).map((p) => p.ign);
+
+      const patchTeams = (teams: Team[]) =>
+        teams.map((t) => {
+          if (normKey(t.name) === targetKey) {
+            return {
+              ...t,
+              roster: nextRoster,
+              players: starterIgns.length > 0 ? starterIgns : nextRoster.map((p) => p.ign),
+              synergy: Math.max(0, (t.synergy ?? 15) - 5),
+            };
+          }
+          if (removeKey && t.roster?.some((p) => p.ign.trim().toLowerCase() === removeKey)) {
+            const filtered = t.roster.filter((p) => p.ign.trim().toLowerCase() !== removeKey);
+            return {
+              ...t,
+              roster: filtered,
+              players: filtered.filter((p) => !p.sub).map((p) => p.ign),
+            };
+          }
+          return t;
+        });
+
+      setChampionships((prev) =>
+        prev.map((c) => {
+          if ((c.game ?? "lol") !== game) return c;
+          return {
+            ...c,
+            teams: patchTeams(c.teams),
+            serieB: c.serieB ? { ...c.serieB, teams: patchTeams(c.serieB.teams) } : undefined,
+            updatedAt: Date.now(),
+          };
+        }),
+      );
+    },
+    [],
+  );
+
   const assignSlotTeam: StoreCtx["assignSlotTeam"] = useCallback(
     (championshipId, phaseId, matchId, slot, newTeamId) => {
       setChampionships((prev) =>
@@ -3344,6 +3393,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       seedPhaseTeams,
       redrawSwiss,
       updateTeam,
+      controlTeamRoster,
       assignSlotTeam,
       addTeamsToDivision,
       setupSerieB,
@@ -3405,6 +3455,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       seedPhaseTeams,
       redrawSwiss,
       updateTeam,
+      controlTeamRoster,
       assignSlotTeam,
       addTeamsToDivision,
       setupSerieB,

@@ -13,12 +13,18 @@ import {
   Activity,
   Globe,
   Calendar,
+  SlidersHorizontal,
+  UserPlus,
+  UserMinus,
+  ArrowUpDown,
+  Search,
 } from "lucide-react";
-import type { CareerLedger, Championship, GameId, Player, Team } from "@/lib/lol/types";
+import type { CareerLedger, Championship, GameId, Player, PlayerRole, Team } from "@/lib/lol/types";
 import { TeamLogo } from "./team-logo";
 import { CountryFlag } from "./country-flag";
 import { PlayerAvatar } from "./player-avatar";
-import { ensureRoster, pickStarters } from "@/lib/lol/players";
+import { ensureRoster, pickStarters, playerOverall, rosterStrength } from "@/lib/lol/players";
+import { uid } from "@/lib/lol/generate";
 import { canonicalTournamentName, extractSeasonFromChampName } from "@/lib/lol/international";
 import { useStore } from "@/lib/lol/store";
 import { getPlayerCareerAwards } from "@/lib/lol/mvp";
@@ -38,9 +44,15 @@ export function TeamProfileDrawer({
   allChampionships?: Championship[];
   onClose: () => void;
 }) {
-  const { championships: storeChampionships } = useStore();
+  const { championships: storeChampionships, controlTeamRoster } = useStore();
   const effectiveChampionships = allChampionships && allChampionships.length > 0 ? allChampionships : storeChampionships;
   const [activeTab, setActiveTab] = useState<"trophies" | "roster" | "stats" | "history">("trophies");
+  const [manageMode, setManageMode] = useState(false);
+  const [hireMode, setHireMode] = useState<"market" | "custom">("market");
+  const [marketQuery, setMarketQuery] = useState("");
+  const [customIgn, setCustomIgn] = useState("");
+  const [customRole, setCustomRole] = useState<PlayerRole>("mid");
+  const [customOvr, setCustomOvr] = useState<number>(75);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -50,12 +62,130 @@ export function TeamProfileDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const roster = ensureRoster(team) ?? [];
-  const starters = pickStarters(roster);
-  const subs = roster.filter((p) => p.sub);
-
   const normKey = team.name.trim().toLowerCase();
   const normTag = (team.tag ?? "").trim().toLowerCase();
+  const activeGame =
+    championship?.game ??
+    (["EU", "CIS", "SA", "NA", "ASIA"].includes((team.region ?? "").trim().toUpperCase())
+      ? "cs2"
+      : game);
+
+  const liveTeam =
+    storeChampionships
+      .filter((c) => (c.game ?? "lol") === activeGame)
+      .flatMap((c) => [...c.teams, ...(c.serieB?.teams ?? [])])
+      .find((t) => t.name.trim().toLowerCase() === normKey) ?? team;
+
+  const roster = liveTeam.roster && liveTeam.roster.length > 0
+    ? liveTeam.roster
+    : manageMode
+      ? []
+      : (ensureRoster(liveTeam) ?? []);
+  const starters = pickStarters(roster);
+  const starterIds = new Set(starters.map((p) => p.id));
+  const subs = roster.filter((p) => !starterIds.has(p.id));
+  const currentStrength = rosterStrength(roster) ?? 0;
+
+  const roleLabel = (role: PlayerRole) => {
+    if (activeGame === "cs2") {
+      switch (role) {
+        case "top":
+          return "ENTRY";
+        case "jungle":
+          return "SUP";
+        case "mid":
+          return "RIFLER";
+        case "adc":
+          return "AWPER";
+        case "support":
+          return "IGL";
+      }
+    }
+    return role.toUpperCase();
+  };
+
+  const handleFirePlayer = (playerId: string) => {
+    const next = roster.filter((p) => p.id !== playerId);
+    controlTeamRoster(activeGame, liveTeam.name, next);
+  };
+
+  const handleToggleSub = (player: Player) => {
+    const next = roster.map((p) => (p.id === player.id ? { ...p, sub: !p.sub } : p));
+    controlTeamRoster(activeGame, liveTeam.name, next);
+  };
+
+  const handleHireFromMarket = (candidate: Player) => {
+    const existingIds = new Set(roster.map((p) => p.ign.trim().toLowerCase()));
+    if (existingIds.has(candidate.ign.trim().toLowerCase())) return;
+    const hasStarterInRole = roster.some((p) => !p.sub && p.role === candidate.role);
+    const hired: Player = {
+      ...candidate,
+      id: candidate.id || uid(),
+      sub: hasStarterInRole,
+    };
+    controlTeamRoster(activeGame, liveTeam.name, [...roster, hired], {
+      removePlayerIgnFromOthers: candidate.ign,
+    });
+  };
+
+  const handleHireCustom = () => {
+    const ign = customIgn.trim();
+    if (!ign) return;
+    const clamped = Math.max(20, Math.min(98, Math.round(customOvr)));
+    const hasStarterInRole = roster.some((p) => !p.sub && p.role === customRole);
+    const newPlayer: Player = {
+      id: uid(),
+      ign,
+      role: customRole,
+      age: 21,
+      sub: hasStarterInRole,
+      custom: true,
+      attrs: {
+        mechanics: clamped,
+        gameIq: Math.max(20, Math.min(98, clamped - 1)),
+        clutch: Math.max(20, Math.min(98, clamped - 2)),
+        consistency: clamped,
+        aggression: clamped,
+        adaptability: clamped,
+        intlExperience: Math.max(15, Math.min(95, clamped - 10)),
+        mentality: clamped,
+      },
+    };
+    controlTeamRoster(activeGame, liveTeam.name, [...roster, newPlayer]);
+    setCustomIgn("");
+  };
+
+  const marketCandidates = manageMode
+    ? (() => {
+        const currentIgns = new Set(roster.map((p) => p.ign.trim().toLowerCase()));
+        const seen = new Set<string>();
+        const list: { player: Player; teamName: string; ovr: number }[] = [];
+        for (const c of storeChampionships) {
+          if ((c.game ?? "lol") !== activeGame) continue;
+          for (const t of [...c.teams, ...(c.serieB?.teams ?? [])]) {
+            if (t.name.trim().toLowerCase() === normKey) continue;
+            for (const p of t.roster ?? []) {
+              const key = p.ign.trim().toLowerCase();
+              if (!key || currentIgns.has(key) || seen.has(key)) continue;
+              seen.add(key);
+              list.push({ player: p, teamName: t.name, ovr: playerOverall(p) });
+            }
+          }
+        }
+        const q = marketQuery.trim().toLowerCase();
+        return list
+          .filter(
+            (item) =>
+              !q ||
+              item.player.ign.toLowerCase().includes(q) ||
+              item.teamName.toLowerCase().includes(q) ||
+              roleLabel(item.player.role).toLowerCase().includes(q),
+          )
+          .sort((a, b) => b.ovr - a.ovr)
+          .slice(0, 12);
+      })()
+    : [];
+
   const careerEntry = career?.[game]?.[normKey];
 
   const matchTeam = (name?: string, tag?: string) => {
@@ -96,12 +226,6 @@ export function TeamProfileDrawer({
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
-
-  const activeGame =
-    championship?.game ??
-    (["EU", "CIS", "SA", "NA", "ASIA"].includes((team.region ?? "").trim().toUpperCase())
-      ? "cs2"
-      : "lol");
 
   const titleMap = new Map<string, DetailedTitle>();
 
@@ -363,10 +487,182 @@ export function TeamProfileDrawer({
           {/* TAB 2: ELENCO */}
           {activeTab === "roster" && (
             <div className="space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-gold">
+                    Titulares
+                  </span>
+                  <span className="rounded border border-border/60 bg-black/30 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                    Força {currentStrength}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManageMode((v) => !v)}
+                  className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-mono transition-colors ${
+                    manageMode
+                      ? "border-gold/60 bg-gold/15 text-gold"
+                      : "border-border/50 bg-transparent text-muted-foreground hover:border-gold/40 hover:text-foreground"
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  {manageMode ? "Concluir" : "Controlar elenco"}
+                </button>
+              </div>
+
+              {manageMode && (
+                <div className="rounded-xl border border-gold/30 bg-card/50 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gold inline-flex items-center gap-1.5">
+                      <UserPlus className="h-3.5 w-3.5" /> Contratar jogador
+                    </span>
+                    <div className="flex items-center gap-1 rounded bg-black/30 p-0.5 text-[10px] font-mono">
+                      <button
+                        type="button"
+                        onClick={() => setHireMode("market")}
+                        className={`rounded px-2 py-0.5 ${
+                          hireMode === "market"
+                            ? "bg-gold/20 text-gold"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Mercado
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHireMode("custom")}
+                        className={`rounded px-2 py-0.5 ${
+                          hireMode === "custom"
+                            ? "bg-gold/20 text-gold"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Criar novo
+                      </button>
+                    </div>
+                  </div>
+
+                  {hireMode === "market" ? (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                        <input
+                          type="text"
+                          value={marketQuery}
+                          onChange={(e) => setMarketQuery(e.target.value)}
+                          placeholder="Buscar jogador por nick, time ou função..."
+                          className="w-full rounded border border-border/60 bg-black/30 py-1.5 pl-8 pr-2.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-gold/50 focus:outline-none"
+                        />
+                      </div>
+                      <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                        {marketCandidates.length === 0 ? (
+                          <p className="py-2 text-center text-[11px] text-muted-foreground">
+                            Nenhum jogador encontrado.
+                          </p>
+                        ) : (
+                          marketCandidates.map(({ player, teamName, ovr }) => (
+                            <div
+                              key={`${teamName}-${player.id}-${player.ign}`}
+                              className="flex items-center justify-between rounded border border-border/40 bg-black/25 px-2.5 py-1.5"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] font-mono text-muted-foreground">
+                                  {roleLabel(player.role)}
+                                </span>
+                                <span className="truncate text-xs font-bold text-foreground">
+                                  {player.ign}
+                                </span>
+                                <span className="truncate text-[10px] text-muted-foreground">
+                                  ({teamName})
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-[11px] font-mono font-bold text-gold">
+                                  {ovr}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleHireFromMarket(player)}
+                                  className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/25"
+                                >
+                                  Contratar
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <input
+                          type="text"
+                          value={customIgn}
+                          onChange={(e) => setCustomIgn(e.target.value)}
+                          placeholder="Nick (IGN)"
+                          className="rounded border border-border/60 bg-black/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-gold/50 focus:outline-none"
+                        />
+                        <select
+                          value={customRole}
+                          onChange={(e) => setCustomRole(e.target.value as PlayerRole)}
+                          className="rounded border border-border/60 bg-black/30 px-2 py-1.5 text-xs text-foreground focus:border-gold/50 focus:outline-none"
+                        >
+                          {(["top", "jungle", "mid", "adc", "support"] as PlayerRole[]).map((r) => (
+                            <option key={r} value={r}>
+                              {roleLabel(r)}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-mono text-muted-foreground">OVR</span>
+                          <input
+                            type="number"
+                            min={20}
+                            max={98}
+                            value={customOvr}
+                            onChange={(e) => setCustomOvr(Number(e.target.value) || 50)}
+                            className="w-full rounded border border-border/60 bg-black/30 px-2 py-1.5 text-xs font-mono text-gold focus:border-gold/50 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1 text-[10px] font-mono">
+                          {[
+                            { label: "Fraco 42", val: 42 },
+                            { label: "Médio 62", val: 62 },
+                            { label: "Forte 78", val: 78 },
+                            { label: "Craque 90", val: 90 },
+                          ].map((preset) => (
+                            <button
+                              key={preset.val}
+                              type="button"
+                              onClick={() => setCustomOvr(preset.val)}
+                              className={`rounded border px-1.5 py-0.5 ${
+                                customOvr === preset.val
+                                  ? "border-gold/60 bg-gold/20 text-gold"
+                                  : "border-border/50 text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleHireCustom}
+                          disabled={!customIgn.trim()}
+                          className="rounded border border-emerald-500/40 bg-emerald-500/20 px-3 py-1 text-[11px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-40"
+                        >
+                          Contratar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div>
-                <span className="text-xs font-extrabold uppercase tracking-wider text-gold mb-2 block">
-                  Titulares
-                </span>
                 <div className="space-y-2">
                   {starters.map((player) => {
                     const pAwards = getPlayerCareerAwards(player.ign, allPool);
@@ -379,7 +675,7 @@ export function TeamProfileDrawer({
                           <div className="flex items-center gap-3">
                             <PlayerAvatar ign={player.ign} role={player.role} size="sm" />
                             <span className="w-12 text-center rounded bg-muted/60 px-1.5 py-1 text-xs font-mono font-bold uppercase text-muted-foreground">
-                              {player.role}
+                              {roleLabel(player.role)}
                             </span>
                             <div>
                               <div className="flex items-center gap-2">
@@ -404,9 +700,17 @@ export function TeamProfileDrawer({
                           <div className="flex items-center gap-3 text-right">
                             <div>
                               <span className="text-[10px] uppercase text-muted-foreground block font-mono">
-                                Mecânica
+                                OVR
                               </span>
                               <span className="font-display text-xs font-bold text-gold">
+                                {playerOverall(player)}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase text-muted-foreground block font-mono">
+                                Mecânica
+                              </span>
+                              <span className="font-display text-xs font-bold text-foreground">
                                 {player.attrs.mechanics}
                               </span>
                             </div>
@@ -418,6 +722,26 @@ export function TeamProfileDrawer({
                                 {player.attrs.clutch}
                               </span>
                             </div>
+                            {manageMode && (
+                              <div className="flex items-center gap-1 pl-1 border-l border-border/50">
+                                <button
+                                  type="button"
+                                  title="Mover para reserva"
+                                  onClick={() => handleToggleSub(player)}
+                                  className="rounded border border-border/50 p-1 text-muted-foreground hover:border-gold/50 hover:text-gold"
+                                >
+                                  <ArrowUpDown className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Demitir jogador"
+                                  onClick={() => handleFirePlayer(player.id)}
+                                  className="rounded border border-border/50 p-1 text-muted-foreground hover:border-blood/60 hover:text-blood"
+                                >
+                                  <UserMinus className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -467,15 +791,37 @@ export function TeamProfileDrawer({
                       >
                         <div className="flex items-center gap-2.5">
                           <span className="w-12 text-center rounded bg-muted/40 px-1 py-0.5 text-[11px] font-mono uppercase text-muted-foreground">
-                            {player.role}
+                            {roleLabel(player.role)}
                           </span>
                           <span className="font-display text-xs font-semibold text-foreground">
                             {player.ign}
                           </span>
                         </div>
-                        <span className="text-xs font-mono text-muted-foreground">
-                          {player.attrs.mechanics} MEC
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-muted-foreground">
+                            OVR {playerOverall(player)}
+                          </span>
+                          {manageMode && (
+                            <div className="flex items-center gap-1 pl-1 border-l border-border/50">
+                              <button
+                                type="button"
+                                title="Promover para titular"
+                                onClick={() => handleToggleSub(player)}
+                                className="rounded border border-border/50 p-1 text-muted-foreground hover:border-gold/50 hover:text-gold"
+                              >
+                                <ArrowUpDown className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Demitir jogador"
+                                onClick={() => handleFirePlayer(player.id)}
+                                className="rounded border border-border/50 p-1 text-muted-foreground hover:border-blood/60 hover:text-blood"
+                              >
+                                <UserMinus className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
