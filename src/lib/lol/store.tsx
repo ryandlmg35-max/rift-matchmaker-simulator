@@ -74,6 +74,7 @@ import {
 import { classifyLoLIntlTournament, extractSeasonYear, playerGoatKey } from "./goats";
 import {
   advanceChampionshipToNextSplit,
+  advanceChampionshipWithGlobalMarket,
   buildNextSplitChampionship,
   archiveCompletedChampions,
   buildPromotionBracket,
@@ -84,8 +85,11 @@ import {
 import {
   GLOBAL_FREE_AGENT_POOL,
   LEGACY_FICTIONAL_FREE_AGENTS,
+  applyExternalUpdatesToChampionships,
   isLegacyClonedPlayer,
+  runGlobalTransferWindow as executeGlobalTransferWindow,
   runMidSplitMarketTick,
+  type ExternalLeagueUpdate,
 } from "./transfers";
 
 const STORAGE_KEY = "lol-esports-sim:v2";
@@ -1166,6 +1170,8 @@ interface StoreCtx {
    * preservando 100% das fases, formato, histórico e metadados.
    */
   advanceToNextSplit: (championshipId: string) => boolean;
+  /** Roda uma janela de transferências GLOBAL independente em todas as ligas locais de um jogo (simuladas ou não). */
+  runGlobalTransferWindow: (game: GameId) => number;
   /**
    * Avança campeonato internacional (Worlds, MSI, etc.) para nova edição:
    * arquiva campeão, remove times antigos, puxa os novos classificados das ligas locais
@@ -1998,6 +2004,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       setChampionships((prev) => {
+        const pendingExternalUpdates: ExternalLeagueUpdate[] = [];
         const nextList = prev.map((c) => {
           if (c.id !== championshipId) return c;
           const division = phaseDivision(c, phaseId);
@@ -2192,12 +2199,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                       : updated.serieB,
                   transferHistory: [...marketTick.news, ...(updated.transferHistory ?? [])].slice(0, 40),
                 };
+                if (marketTick.externalUpdates.length > 0) {
+                  pendingExternalUpdates.push(...marketTick.externalUpdates);
+                }
               }
             }
           }
           return updated;
         });
-        const targetChamp = nextList.find((x) => x.id === championshipId);
+        const withExternal = applyExternalUpdatesToChampionships(nextList, pendingExternalUpdates);
+        const targetChamp = withExternal.find((x) => x.id === championshipId);
         let synced = targetChamp ? syncTeamRostersAcrossChampionships(nextList, targetChamp) : nextList;
         if (targetChamp && isWorldCupChamp(targetChamp) && winnerId) {
           const lastBracket = [...targetChamp.phases].reverse().find((p) => p.kind === "bracket");
@@ -2266,6 +2277,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       setChampionships((prev) => {
+        const pendingExternalUpdates: ExternalLeagueUpdate[] = [];
         const nextList = prev.map((c) => {
           if (c.id !== championshipId) return c;
           const division = phaseDivision(c, phaseId);
@@ -2436,6 +2448,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                         : updated.serieB,
                     transferHistory: [...marketTick.news, ...(updated.transferHistory ?? [])].slice(0, 40),
                   };
+                  if (marketTick.externalUpdates.length > 0) {
+                    pendingExternalUpdates.push(...marketTick.externalUpdates);
+                  }
                 }
               }
             }
@@ -2443,8 +2458,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return updated;
         });
 
-        const targetChamp = nextList.find((x) => x.id === championshipId);
-        let synced = targetChamp ? syncTeamRostersAcrossChampionships(nextList, targetChamp) : nextList;
+        const withExternal = applyExternalUpdatesToChampionships(nextList, pendingExternalUpdates);
+        const targetChamp = withExternal.find((x) => x.id === championshipId);
+        let synced = targetChamp ? syncTeamRostersAcrossChampionships(withExternal, targetChamp) : withExternal;
         if (targetChamp && isWorldCupChamp(targetChamp)) {
           const lastBracket = [...targetChamp.phases].reverse().find((p) => p.kind === "bracket");
           const decisive = lastBracket
@@ -3061,14 +3077,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const c = prev.find((x) => x.id === championshipId);
       if (!c) return prev;
       const archived = archiveCompletedChampions(c);
-      const next = advanceChampionshipToNextSplit(archived, careerRef.current, prev);
+      const { next, externalUpdates } = advanceChampionshipWithGlobalMarket(archived, careerRef.current, prev);
       if (!next) return prev;
       ok = true;
-      const nextList = prev.map((item) => (item.id === championshipId ? next : item));
+      let nextList = prev.map((item) => (item.id === championshipId ? next : item));
+      if (externalUpdates.length > 0) {
+        nextList = applyExternalUpdatesToChampionships(nextList, externalUpdates);
+      }
       return syncTeamRostersAcrossChampionships(nextList, next);
     });
     return ok;
   }, []);
+
+  const runGlobalTransferWindowCallback: StoreCtx["runGlobalTransferWindow"] = useCallback((game) => {
+    const res = executeGlobalTransferWindow({
+      championships,
+      game,
+      career: careerRef.current,
+    });
+    setChampionships(res.updatedChampionships);
+    return res.totalMoves;
+  }, [championships]);
 
   const advanceInternationalEditionCallback: StoreCtx["advanceInternationalEdition"] = useCallback((championshipId) => {
     let ok = false;
@@ -3303,6 +3332,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createNextSplit,
       advanceToNextSplit,
       advanceInternationalEdition: advanceInternationalEditionCallback,
+      runGlobalTransferWindow: runGlobalTransferWindowCallback,
       exportChampionship: (id) => {
         const c = championships.find((x) => x.id === id);
         // Exporta a versão ENXUTA (mesma que vai para o localStorage) para o
@@ -3363,6 +3393,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createNextSplit,
       advanceToNextSplit,
       advanceInternationalEditionCallback,
+      runGlobalTransferWindowCallback,
       saveChampionToHistory,
       resetCareer,
     ],

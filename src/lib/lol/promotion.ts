@@ -14,7 +14,7 @@ import type {
 import { buildPhaseMatches, generateGSLGroup, uid } from "./generate";
 import { regressMomentumForSplit, seasonRecords } from "./momentum";
 import { ensureRoster, evolveRoster, synergyForNewSplit, updateCulture } from "./players";
-import { runAutonomousMarket } from "./transfers";
+import { runAutonomousMarket, type ExternalLeagueUpdate } from "./transfers";
 
 /** Prioridade de "decisão final" de um confronto (reset > grande final > última). */
 const finalPriority = (m: Match) =>
@@ -575,46 +575,49 @@ export function buildNextSplitChampionship(
   }
 
   return {
-    ...c,
-    id: uid(),
-    name: c.name,
-    game: c.game,
-    region: c.region,
-    season: nextSeasonLabel(c.season),
-    logo: c.logo,
-    accentColor: c.accentColor,
-    countsTowardsRanking: c.countsTowardsRanking,
-    internationalLevel: c.internationalLevel,
-    isInternational: c.isInternational,
-    circuitId: c.circuitId,
-    format: c.format,
-    formerTeams: c.formerTeams,
-    hasSecondDivision: teamB !== null,
-    teams: teamA,
-    transferHistory: [...retirementNews, ...marketResult.news],
-    retiredPlayers: [...newRetiredRecords, ...(c.retiredPlayers ?? [])].slice(0, 120),
-    phases: buildFreshPhases(
-      c.phases,
-      teamA.map((t) => t.id),
-    ),
-    serieB:
-      teamB && c.serieB
-        ? {
-            ...c.serieB,
-            teams: teamB,
-            phases: buildFreshPhases(
-              c.serieB.phases,
-              teamB.map((t) => t.id),
-            ),
-            history: c.serieB.history ?? [],
-          }
-        : undefined,
-    // PRESERVA TODO O HISTÓRICO DE CAMPEÕES ACUMULADO!
-    history: c.history ?? [],
-    momentum: regressMomentumForSplit(c.momentum),
-    momentumLog: offseasonLog.length > 0 ? offseasonLog : undefined,
-    promotion: undefined,
-    updatedAt: Date.now(),
+    next: {
+      ...c,
+      id: uid(),
+      name: c.name,
+      game: c.game,
+      region: c.region,
+      season: nextSeasonLabel(c.season),
+      logo: c.logo,
+      accentColor: c.accentColor,
+      countsTowardsRanking: c.countsTowardsRanking,
+      internationalLevel: c.internationalLevel,
+      isInternational: c.isInternational,
+      circuitId: c.circuitId,
+      format: c.format,
+      formerTeams: c.formerTeams,
+      hasSecondDivision: teamB !== null,
+      teams: teamA,
+      transferHistory: [...retirementNews, ...marketResult.news],
+      retiredPlayers: [...newRetiredRecords, ...(c.retiredPlayers ?? [])].slice(0, 120),
+      phases: buildFreshPhases(
+        c.phases,
+        teamA.map((t) => t.id),
+      ),
+      serieB:
+        teamB && c.serieB
+          ? {
+              ...c.serieB,
+              teams: teamB,
+              phases: buildFreshPhases(
+                c.serieB.phases,
+                teamB.map((t) => t.id),
+              ),
+              history: c.serieB.history ?? [],
+            }
+          : undefined,
+      // PRESERVA TODO O HISTÓRICO DE CAMPEÕES ACUMULADO!
+      history: c.history ?? [],
+      momentum: regressMomentumForSplit(c.momentum),
+      momentumLog: offseasonLog.length > 0 ? offseasonLog : undefined,
+      promotion: undefined,
+      updatedAt: Date.now(),
+    },
+    externalUpdates: marketResult.externalUpdates ?? [],
   };
 }
 
@@ -622,11 +625,28 @@ export function buildNextSplitChampionship(
  * Avança o campeonato ATUAL para o próximo split/temporada no mesmo lugar,
  * mantendo o mesmo id, acumulando o campeão no histórico e evitando duplicar cards na tela inicial.
  */
+export function advanceChampionshipWithGlobalMarket(
+  c: Championship,
+  career?: CareerLedger,
+  allChampionships?: Championship[],
+): { next: Championship | null; externalUpdates: ExternalLeagueUpdate[] } {
+  const next = advanceChampionshipToNextSplitInternal(c, career, allChampionships);
+  return next;
+}
+
 export function advanceChampionshipToNextSplit(
   c: Championship,
   career?: CareerLedger,
   allChampionships?: Championship[],
 ): Championship | null {
+  return advanceChampionshipToNextSplitInternal(c, career, allChampionships).next;
+}
+
+function advanceChampionshipToNextSplitInternal(
+  c: Championship,
+  career?: CareerLedger,
+  allChampionships?: Championship[],
+): { next: Championship | null; externalUpdates: ExternalLeagueUpdate[] } {
   const next = buildNextSplitChampionship(c, career, allChampionships);
   if (!next) return null;
   return {

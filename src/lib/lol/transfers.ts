@@ -1,6 +1,6 @@
 import type { CareerLedger, Championship, GameId, Player, PlayerRole, Team, TransferNews } from "./types";
 import { uid } from "./generate";
-import { ensureRoster, getResolvedAttrs, pickStarters, playerOverall } from "./players";
+import { ensureRoster, generateAcademyRookie, getResolvedAttrs, pickStarters, playerOverall } from "./players";
 import { getOfficialRegionRanking, normalizeRegion } from "./international";
 
 // ---------------------------------------------------------------------------
@@ -688,11 +688,27 @@ export const GLOBAL_FREE_AGENT_POOL: Omit<Player, "id">[] = [
 // IA Autônoma do Mercado de Transferências
 // ---------------------------------------------------------------------------
 
+export interface ExternalLeagueUpdate {
+  championshipId: string;
+  teamId: string;
+  isSerieB: boolean;
+  updatedTeam: Team;
+  newsItem?: TransferNews;
+}
+
+interface MutableExternalLeague {
+  champ: Championship;
+  region: string;
+  teams: Team[];
+  serieBTeams: Team[];
+}
+
 export interface AutonomousMarketResult {
   updatedTeams: Team[];
   updatedSerieBTeams?: Team[];
   news: TransferNews[];
   remainingFreeAgents: Player[];
+  externalUpdates: ExternalLeagueUpdate[];
 }
 
 function isBlockedInternational(c: Championship): boolean {
@@ -814,6 +830,189 @@ function doesPlayerAcceptMove(params: {
   return true;
 }
 
+function buildExternalLeagues(
+  championship: Championship,
+  allChampionships: Championship[],
+  game: GameId,
+): MutableExternalLeague[] {
+  return allChampionships
+    .filter(
+      (c) =>
+        c.id !== championship.id &&
+        (c.game ?? "lol") === game &&
+        !isBlockedInternational(c) &&
+        c.teams.length > 0,
+    )
+    .map((c) => ({
+      champ: c,
+      region: c.region || "CBLOL",
+      teams: c.teams.map((t) => ({ ...t, roster: ensureRoster(t) })),
+      serieBTeams: (c.serieB?.teams ?? []).map((t) => ({ ...t, roster: ensureRoster(t) })),
+    }));
+}
+
+/**
+ * Repõe automaticamente o elenco de um time de outra liga que perdeu um jogador
+ * (mesmo se a liga ainda não tiver sido simulada).
+ * Ordem: 1) promove reserva da mesma rota; 2) contrata melhor agente livre compatível;
+ * 3) sobe um rookie da base (Academy) para nunca deixar o time sem 5 titulares.
+ */
+function replenishSellerTeam(params: {
+  seller: Team;
+  soldPlayer: Player;
+  sellerRegion: string;
+  isSerieB: boolean;
+  pool: Player[];
+  usedIgns: Set<string>;
+  career?: CareerLedger;
+  game: GameId;
+}): { updatedSeller: Team; replacementNews?: TransferNews } {
+  const { seller, soldPlayer, sellerRegion, isSerieB, pool, usedIgns, career, game } = params;
+  const remainingRoster = (ensureRoster(seller) ?? []).filter((p) => p.id !== soldPlayer.id);
+  const currentStarters = pickStarters(remainingRoster);
+  const needsStarterForRole = !currentStarters.some((p) => p.role === soldPlayer.role);
+
+  if (!needsStarterForRole && currentStarters.length >= 5) {
+    return {
+      updatedSeller: {
+        ...seller,
+        roster: remainingRoster,
+        synergy: Math.max(0, (seller.synergy ?? 10) - 6),
+      },
+    };
+  }
+
+  // 1. Tenta promover um reserva da mesma rota já no elenco
+  const roleSub = remainingRoster.find((p) => p.sub && p.role === soldPlayer.role);
+  if (roleSub) {
+    const promoted = remainingRoster.map((p) =>
+      p.id === roleSub.id ? { ...p, sub: false } : p,
+    );
+    return {
+      updatedSeller: {
+        ...seller,
+        roster: promoted,
+        synergy: Math.max(0, (seller.synergy ?? 10) - 5),
+      },
+      replacementNews: {
+        id: uid(),
+        headline: `REPOSIÇÃO: ${seller.name} promove o reserva ${roleSub.ign} (${soldPlayer.role.toUpperCase()}) após saída de ${soldPlayer.ign}.`,
+        fromTeam: "Reserva",
+        toTeam: seller.name,
+        playerIgn: roleSub.ign,
+        role: roleSub.role,
+        kind: "signing",
+        date: new Date().toISOString(),
+      },
+    };
+  }
+
+  // 2. Busca o melhor Agente Livre disponível para a rota dentro do orçamento e limite de imports
+  const sellerBudget = getTeamBaseBudget(seller, sellerRegion, false, isSerieB, career, game);
+  const currentImports = currentStarters.filter((p) => isPlayerImport(p, sellerRegion)).length;
+  let bestIdx = -1;
+  let bestOvr = -1;
+  for (let i = 0; i < pool.length; i++) {
+    const fa = pool[i];
+    if (fa.role !== soldPlayer.role) continue;
+    if (usedIgns.has(fa.ign.trim().toLowerCase())) continue;
+    if (isPlayerImport(fa, sellerRegion) && currentImports >= 2) continue;
+    const salary = getPlayerSalary(fa, sellerRegion, career, game);
+    if (salary > sellerBudget * 0.55) continue;
+    const ovr = playerOverall(fa);
+    if (ovr > bestOvr) {
+      bestOvr = ovr;
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx >= 0) {
+    const signed = pool.splice(bestIdx, 1)[0];
+    usedIgns.add(signed.ign.trim().toLowerCase());
+    const newPlayer: Player = {
+      ...signed,
+      id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      sub: false,
+    };
+    return {
+      updatedSeller: {
+        ...seller,
+        roster: [...remainingRoster, newPlayer],
+        synergy: Math.max(0, (seller.synergy ?? 10) - 8),
+      },
+      replacementNews: {
+        id: uid(),
+        headline: `REPOSIÇÃO NO MERCADO: ${seller.name} contrata ${signed.ign} (${signed.role.toUpperCase()}) para repor a saída de ${soldPlayer.ign}.`,
+        fromTeam: "Agente Livre",
+        toTeam: seller.name,
+        playerIgn: signed.ign,
+        role: signed.role,
+        kind: "signing",
+        value: getPlayerSalary(signed, sellerRegion, career, game),
+        date: new Date().toISOString(),
+      },
+    };
+  }
+
+  // 3. Garantia absoluta: sobe um rookie da base da própria região
+  const rookie = generateAcademyRookie(soldPlayer.role, sellerRegion, seller.name);
+  usedIgns.add(rookie.ign.trim().toLowerCase());
+  return {
+    updatedSeller: {
+      ...seller,
+      roster: [...remainingRoster, { ...rookie, sub: false }],
+      synergy: Math.max(0, (seller.synergy ?? 10) - 7),
+    },
+    replacementNews: {
+      id: uid(),
+      headline: `BASE PROMOVIDA: ${seller.name} sobe o jovem ${rookie.ign} (${rookie.role.toUpperCase()}) da Academy após saída de ${soldPlayer.ign}.`,
+      fromTeam: "Academy",
+      toTeam: seller.name,
+      playerIgn: rookie.ign,
+      role: rookie.role,
+      kind: "signing",
+      date: new Date().toISOString(),
+    },
+  };
+}
+
+export function applyExternalUpdatesToChampionships(
+  championships: Championship[],
+  updates: ExternalLeagueUpdate[],
+): Championship[] {
+  if (updates.length === 0) return championships;
+  const byChamp = new Map<string, ExternalLeagueUpdate[]>();
+  for (const u of updates) {
+    const arr = byChamp.get(u.championshipId) ?? [];
+    arr.push(u);
+    byChamp.set(u.championshipId, arr);
+  }
+  return championships.map((c) => {
+    const list = byChamp.get(c.id);
+    if (!list || list.length === 0) return c;
+    let nextTeams = c.teams;
+    let nextSerieBTeams = c.serieB?.teams;
+    const extraNews: TransferNews[] = [];
+    for (const u of list) {
+      if (u.isSerieB && nextSerieBTeams) {
+        nextSerieBTeams = nextSerieBTeams.map((t) => (t.id === u.teamId ? u.updatedTeam : t));
+      } else {
+        nextTeams = nextTeams.map((t) => (t.id === u.teamId ? u.updatedTeam : t));
+      }
+      if (u.newsItem) extraNews.push(u.newsItem);
+    }
+    return {
+      ...c,
+      teams: nextTeams,
+      serieB: c.serieB ? { ...c.serieB, teams: nextSerieBTeams ?? c.serieB.teams } : undefined,
+      transferHistory:
+        extraNews.length > 0
+          ? [...extraNews, ...(c.transferHistory ?? [])].slice(0, 40)
+          : c.transferHistory,
+    };
+  });
+}
+
 function moveSingleTeam(params: {
   team: Team;
   allLeagueTeams: Team[];
@@ -822,11 +1021,30 @@ function moveSingleTeam(params: {
   career?: CareerLedger;
   game: GameId;
   isSerieB: boolean;
-}): { updatedTeam: Team; updatedAllTeams: Team[]; newsItem?: TransferNews } {
-  const { team, allLeagueTeams, pool, region, career, game, isSerieB } = params;
+  externalLeagues?: MutableExternalLeague[];
+  usedIgns?: Set<string>;
+}): {
+  updatedTeam: Team;
+  updatedAllTeams: Team[];
+  newsItem?: TransferNews;
+  externalUpdates: ExternalLeagueUpdate[];
+} {
+  const {
+    team,
+    allLeagueTeams,
+    pool,
+    region,
+    career,
+    game,
+    isSerieB,
+    externalLeagues = [],
+    usedIgns = collectUsedIgns(allLeagueTeams),
+  } = params;
   const roster = ensureRoster(team) ?? [];
   const starters = pickStarters(roster);
-  if (starters.length === 0) return { updatedTeam: team, updatedAllTeams: allLeagueTeams };
+  if (starters.length === 0) {
+    return { updatedTeam: team, updatedAllTeams: allLeagueTeams, externalUpdates: [] };
+  }
 
   const budget = getTeamBaseBudget(team, region, false, isSerieB, career, game);
   const currentImports = starters.filter((p) => isPlayerImport(p, region)).length;
@@ -955,12 +1173,179 @@ function moveSingleTeam(params: {
       return {
         updatedTeam: updatedBuyer,
         updatedAllTeams: nextLeagueTeams,
+        externalUpdates: [],
         newsItem: {
           id: uid(),
           headline: sellerNeedsSub
             ? `TROCA NA LIGA: ${team.name} acerta com ${candidate.ign} (ex-${other.name}) e envia ${targetStarter.ign} em troca!`
             : `TRANSFERÊNCIA: ${team.name} contrata ${candidate.ign} junto à ${other.name} para a rota ${candidate.role.toUpperCase()}!`,
           fromTeam: other.name,
+          toTeam: team.name,
+          playerIgn: candidate.ign,
+          role: candidate.role,
+          kind: "trade",
+          value: getPlayerSalary(candidate, region, career, game),
+          date: new Date().toISOString(),
+        },
+      };
+    }
+  }
+
+  // 1.5. Mercado Global (outras ligas locais do mesmo jogo, simuladas ou ainda não simuladas!)
+  if (externalLeagues.length > 0 && Math.random() < 0.55) {
+    let bestGlobal: {
+      extLeague: MutableExternalLeague;
+      isSellerSerieB: boolean;
+      seller: Team;
+      candidate: Player;
+      targetStarter: Player;
+      isImp: boolean;
+      score: number;
+    } | null = null;
+
+    for (const ext of externalLeagues) {
+      const poolsToScan: Array<{ teams: Team[]; isSerieB: boolean }> = [
+        { teams: ext.teams, isSerieB: false },
+        ...(ext.serieBTeams.length > 0 ? [{ teams: ext.serieBTeams, isSerieB: true }] : []),
+      ];
+      for (const grp of poolsToScan) {
+        for (const seller of grp.teams) {
+          const sellerRoster = ensureRoster(seller) ?? [];
+          const sellerBudget = getTeamBaseBudget(seller, ext.region, false, grp.isSerieB, career, game);
+          for (const p of sellerRoster) {
+            if (ownIgns.has(p.ign.trim().toLowerCase())) continue;
+            if (leagueIgns.has(p.ign.trim().toLowerCase())) continue;
+            const target = starterByRole.get(p.role);
+            if (!target) continue;
+
+            const candOvr = playerOverall(p);
+            if (candOvr <= target.ovr + 2) continue;
+
+            const isImp = isPlayerImport(p, region);
+            if (isImp && currentImports >= 2 && !isPlayerImport(target.player, region)) continue;
+
+            const salary = getPlayerSalary(p, region, career, game);
+            const maxShare = candOvr >= 82 ? 0.56 : 0.47;
+            if (salary > budget * maxShare) continue;
+
+            // Só tira titular de outra liga se oferecer salto financeiro/esportivo ou se o jogador for reserva lá
+            if (!p.sub && budget <= sellerBudget + 80) continue;
+
+            if (
+              !doesPlayerAcceptMove({
+                player: p,
+                targetTeam: team,
+                targetStarters: starters,
+                replacedStarter: target.player,
+                fromTeam: seller,
+                fromStarters: pickStarters(sellerRoster),
+                isImport: isImp,
+                isSerieB,
+                career,
+                game,
+              })
+            ) {
+              continue;
+            }
+
+            const sc = scoreUpgrade(p, target.player, isImp);
+            if (!bestGlobal || sc > bestGlobal.score) {
+              bestGlobal = {
+                extLeague: ext,
+                isSellerSerieB: grp.isSerieB,
+                seller,
+                candidate: p,
+                targetStarter: target.player,
+                isImp,
+                score: sc,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (bestGlobal) {
+      const { extLeague, isSellerSerieB, seller, candidate, targetStarter, isImp } = bestGlobal;
+      const bought: Player = {
+        ...candidate,
+        id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        sub: false,
+      };
+      const replacedMech = getResolvedAttrs(
+        targetStarter.attrs,
+        targetStarter.ign,
+        targetStarter.role,
+        targetStarter.country,
+        targetStarter.age,
+      ).mechanics;
+      const releaseOld = (targetStarter.age ?? 22) >= 26 || replacedMech < 70;
+      const buyerRoster = releaseOld
+        ? roster.filter((p) => p.id !== targetStarter.id).concat(bought)
+        : roster.map((p) => (p.id === targetStarter.id ? bought : p)).concat({ ...targetStarter, sub: true });
+      if (releaseOld) {
+        pool.push({ ...targetStarter, sub: false });
+        usedIgns.delete(targetStarter.ign.trim().toLowerCase());
+      }
+
+      const updatedBuyer: Team = {
+        ...team,
+        roster: buyerRoster,
+        synergy: Math.max(0, (team.synergy ?? 10) - 11),
+      };
+      nextLeagueTeams = allLeagueTeams.map((t) => (t.id === team.id ? updatedBuyer : t));
+
+      const { updatedSeller, replacementNews } = replenishSellerTeam({
+        seller,
+        soldPlayer: candidate,
+        sellerRegion: extLeague.region,
+        isSerieB: isSellerSerieB,
+        pool,
+        usedIgns,
+        career,
+        game,
+      });
+
+      if (isSellerSerieB) {
+        extLeague.serieBTeams = extLeague.serieBTeams.map((t) =>
+          t.id === seller.id ? updatedSeller : t,
+        );
+      } else {
+        extLeague.teams = extLeague.teams.map((t) => (t.id === seller.id ? updatedSeller : t));
+      }
+
+      const sellerExitNews: TransferNews = {
+        id: uid(),
+        headline: `TRANSFERÊNCIA GLOBAL: ${candidate.ign} (${extLeague.champ.name}) foi contratado por ${team.name} (${region})!`,
+        fromTeam: seller.name,
+        toTeam: team.name,
+        playerIgn: candidate.ign,
+        role: candidate.role,
+        kind: "trade",
+        value: getPlayerSalary(candidate, region, career, game),
+        date: new Date().toISOString(),
+      };
+
+      const externalUpdates: ExternalLeagueUpdate[] = [
+        {
+          championshipId: extLeague.champ.id,
+          teamId: seller.id,
+          isSerieB: isSellerSerieB,
+          updatedTeam: updatedSeller,
+          newsItem: replacementNews ?? sellerExitNews,
+        },
+      ];
+
+      return {
+        updatedTeam: updatedBuyer,
+        updatedAllTeams: nextLeagueTeams,
+        externalUpdates,
+        newsItem: {
+          id: uid(),
+          headline: isImp
+            ? `MERCADO GLOBAL (IMPORT): ${team.name} busca ${candidate.ign} [${candidate.country}] na ${extLeague.champ.name} (${seller.name})!`
+            : `MERCADO GLOBAL: ${team.name} contrata ${candidate.ign} junto à ${seller.name} (${extLeague.champ.name})!`,
+          fromTeam: `${seller.name} (${extLeague.region})`,
           toTeam: team.name,
           playerIgn: candidate.ign,
           role: candidate.role,
@@ -1085,7 +1470,7 @@ function moveSingleTeam(params: {
       synergy: Math.max(0, (team.synergy ?? 10) - 12),
     };
     nextLeagueTeams = allLeagueTeams.map((t) => (t.id === team.id ? updatedTeam : t));
-    return { updatedTeam, updatedAllTeams: nextLeagueTeams, newsItem };
+    return { updatedTeam, updatedAllTeams: nextLeagueTeams, newsItem, externalUpdates: [] };
   }
 
   // 3. Se não contratou ninguém e tem reserva/veterano caro em baixa, pode dispensar para abrir caixa
@@ -1101,6 +1486,7 @@ function moveSingleTeam(params: {
     return {
       updatedTeam,
       updatedAllTeams: nextLeagueTeams,
+      externalUpdates: [],
       newsItem: {
         id: uid(),
         headline: `${team.name} libera ${releasedSub.ign} (${releasedSub.role.toUpperCase()}) para o Mercado Livre.`,
@@ -1114,7 +1500,7 @@ function moveSingleTeam(params: {
     };
   }
 
-  return { updatedTeam: team, updatedAllTeams: allLeagueTeams };
+  return { updatedTeam: team, updatedAllTeams: allLeagueTeams, externalUpdates: [] };
 }
 
 /**
@@ -1136,12 +1522,15 @@ export function runAutonomousMarket(params: {
       updatedSerieBTeams: championship.serieB?.teams,
       news: [],
       remainingFreeAgents: params.freeAgentsPool ?? [],
+      externalUpdates: [],
     };
   }
 
   const region = championship.region || "CBLOL";
   const game = (championship.game ?? "lol") as GameId;
   const news: TransferNews[] = [];
+  const externalUpdates: ExternalLeagueUpdate[] = [];
+  const externalLeagues = buildExternalLeagues(championship, allChampionships, game);
 
   const allGlobalTeams: Team[] = [
     ...championship.teams,
@@ -1173,9 +1562,12 @@ export function runAutonomousMarket(params: {
         career,
         game,
         isSerieB,
+        externalLeagues,
+        usedIgns,
       });
       current = res.updatedAllTeams;
       if (res.newsItem) news.push(res.newsItem);
+      if (res.externalUpdates.length > 0) externalUpdates.push(...res.externalUpdates);
     }
     return current;
   };
@@ -1190,13 +1582,15 @@ export function runAutonomousMarket(params: {
     updatedSerieBTeams: updatedTeamsB,
     news,
     remainingFreeAgents: pool,
+    externalUpdates,
   };
 }
 
 /**
  * Janela viva DURANTE o split em ligas locais:
  * Sem precisar clicar ou aprovar nada, após partidas da liga local os times avaliam
- * seu desempenho e fazem movimentações autônomas (contratações, trocas ou dispensas).
+ * seu desempenho e fazem movimentações autônomas (dentro ou fora da liga, inclusive
+ * em ligas ainda não simuladas, com reposição automática inteligente).
  * Bloqueado em campeonatos internacionais.
  */
 export function runMidSplitMarketTick(params: {
@@ -1205,13 +1599,19 @@ export function runMidSplitMarketTick(params: {
   career?: CareerLedger;
   loserTeamId?: string;
   division?: 1 | 2;
-}): { teams: Team[]; serieBTeams?: Team[]; news: TransferNews[] } {
+}): {
+  teams: Team[];
+  serieBTeams?: Team[];
+  news: TransferNews[];
+  externalUpdates: ExternalLeagueUpdate[];
+} {
   const { championship, allChampionships = [], career, loserTeamId, division = 1 } = params;
   if (isBlockedInternational(championship)) {
     return {
       teams: championship.teams,
       serieBTeams: championship.serieB?.teams,
       news: [],
+      externalUpdates: [],
     };
   }
 
@@ -1223,6 +1623,7 @@ export function runMidSplitMarketTick(params: {
       teams: championship.teams,
       serieBTeams: championship.serieB?.teams,
       news: [],
+      externalUpdates: [],
     };
   }
 
@@ -1235,9 +1636,11 @@ export function runMidSplitMarketTick(params: {
       teams: championship.teams,
       serieBTeams: championship.serieB?.teams,
       news: [],
+      externalUpdates: [],
     };
   }
 
+  const externalLeagues = buildExternalLeagues(championship, allChampionships, game);
   const allGlobalTeams: Team[] = [
     ...championship.teams,
     ...(championship.serieB?.teams ?? []),
@@ -1258,6 +1661,7 @@ export function runMidSplitMarketTick(params: {
       teams: championship.teams,
       serieBTeams: championship.serieB?.teams,
       news: [],
+      externalUpdates: [],
     };
   }
 
@@ -1269,6 +1673,8 @@ export function runMidSplitMarketTick(params: {
     career,
     game,
     isSerieB: division === 2,
+    externalLeagues,
+    usedIgns,
   });
 
   if (!res.newsItem) {
@@ -1276,6 +1682,7 @@ export function runMidSplitMarketTick(params: {
       teams: championship.teams,
       serieBTeams: championship.serieB?.teams,
       news: [],
+      externalUpdates: [],
     };
   }
 
@@ -1283,5 +1690,60 @@ export function runMidSplitMarketTick(params: {
     teams: division === 1 ? res.updatedAllTeams : championship.teams,
     serieBTeams: division === 2 ? res.updatedAllTeams : championship.serieB?.teams,
     news: [res.newsItem],
+    externalUpdates: res.externalUpdates,
   };
+}
+
+/**
+ * Executa uma Janela de Transferências GLOBAL e INDEPENDENTE para todas as ligas locais
+ * de um jogo (simuladas ou não), sem precisar simular nenhuma partida.
+ */
+export function runGlobalTransferWindow(params: {
+  championships: Championship[];
+  game: GameId;
+  career?: CareerLedger;
+}): { updatedChampionships: Championship[]; totalMoves: number } {
+  const { game, career } = params;
+  let current = params.championships.map((c) => ({ ...c }));
+  const localIds = current
+    .filter((c) => (c.game ?? "lol") === game && !isBlockedInternational(c) && c.teams.length > 0)
+    .map((c) => c.id)
+    .sort(() => Math.random() - 0.5);
+
+  let pool: Player[] | undefined;
+  let totalMoves = 0;
+
+  for (const id of localIds) {
+    const champ = current.find((c) => c.id === id);
+    if (!champ) continue;
+
+    const res = runAutonomousMarket({
+      championship: champ,
+      allChampionships: current,
+      career,
+      freeAgentsPool: pool,
+      intensity: "normal",
+    });
+    pool = res.remainingFreeAgents;
+    totalMoves += res.news.length;
+
+    current = current.map((c) => {
+      if (c.id !== id) return c;
+      return {
+        ...c,
+        teams: res.updatedTeams,
+        serieB: c.serieB && res.updatedSerieBTeams ? { ...c.serieB, teams: res.updatedSerieBTeams } : c.serieB,
+        transferHistory:
+          res.news.length > 0
+            ? [...res.news, ...(c.transferHistory ?? [])].slice(0, 40)
+            : c.transferHistory,
+      };
+    });
+
+    if (res.externalUpdates.length > 0) {
+      current = applyExternalUpdatesToChampionships(current, res.externalUpdates);
+    }
+  }
+
+  return { updatedChampionships: current, totalMoves };
 }

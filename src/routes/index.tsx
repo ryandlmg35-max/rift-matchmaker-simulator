@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, RotateCcw, Trophy, Trash2, CalendarDays, Briefcase, Database, Download, Upload, X, Crown } from "lucide-react";
+import { Plus, RotateCcw, Trophy, Trash2, CalendarDays, Briefcase, Database, Download, Upload, X, Crown, ArrowLeftRight } from "lucide-react";
 import { useStore } from "@/lib/lol/store";
 import { loadManagerCareer } from "@/lib/lol/manager-career";
 import { TeamLogo } from "@/components/lol/team-logo";
@@ -40,7 +40,7 @@ const GAMES: Array<{ id: GameId; label: string; accent: string; badge: string }>
 ];
 
 function Index() {
-  const { championships, career, hydrated, removeChampionship, resetChampionship } = useStore();
+  const { championships, career, hydrated, removeChampionship, resetChampionship, runGlobalTransferWindow } = useStore();
   // Reset em massa: modo seleção na home — marca quantas ligas quiser e zera
   // os resultados delas de uma vez (arquivo, elencos e carreira intactos).
   const [resetMode, setResetMode] = useState(false);
@@ -223,6 +223,21 @@ function Index() {
                 <Crown className="h-4 w-4" /> GOATs
               </Link>
             ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                const moves = runGlobalTransferWindow(game);
+                if (moves > 0) {
+                  toast.success(`Janela Global concluída: ${moves} transferência(s) entre ligas (simuladas ou não)!`);
+                } else {
+                  toast.info("Janela Global rodada: nenhuma transferência vantajosa encontrada no momento.");
+                }
+              }}
+              className="flex items-center gap-2 border border-gold/40 bg-black/50 px-4 py-2 font-display text-sm uppercase tracking-[0.2em] text-gold transition-all hover:bg-gold/10"
+              title="Roda uma janela de transferências global independente em todas as ligas locais (simuladas ou não), com reposição automática inteligente"
+            >
+              <ArrowLeftRight className="h-4 w-4" /> Janela Global
+            </button>
             <button
               type="button"
               onClick={() => setSuperBackupOpen(true)}
