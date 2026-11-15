@@ -404,7 +404,7 @@ function RankingPage() {
           <p className="mt-2 text-[10px] uppercase tracking-widest text-muted-foreground">
             {game === "cs2"
               ? "🌎 RANKING REGIONAL VRS (CS2): A força das 5 regiões competitivas (EU, CIS, SA, NA, ASIA) reflete os pontos VRS/HLTV acumulados e o desempenho recente nos Majors (32 times, 3 Fases Suíças) e grandes LANs internacionais."
-              : "🌎 VAGAS POR MOMENTO INTERNACIONAL: A posição (#1 ao #6) é definida pelo Coeficiente de Momento dos últimos 4 torneios internacionais (títulos, finais e playoffs impulsionam a região para cima; pipocadas derrubam a região na tabela). As vagas seguem estritamente a escada da tabela: Top 2 (4 Worlds / 2 MSI) · #3 e #4 (3 Worlds / 2 MSI) · #5 e #6 (2 Worlds / 1 MSI)."}
+              : "🌎 VAGAS POR MERECIMENTO INTERNACIONAL: A posição (#1 ao #6) combina o histórico consolidado com o desempenho das últimas 6 edições internacionais. Um único torneio ruim isolado NÃO derruba a região — ela só perde posição quando confirma má fase em 2+ edições ou quando rivais mantêm superioridade consistente. Top 2 (4 Worlds / 2 MSI) · #3 e #4 (3 Worlds / 2 MSI) · #5 e #6 (2 Worlds / 1 MSI)."}
           </p>
         </section>
 

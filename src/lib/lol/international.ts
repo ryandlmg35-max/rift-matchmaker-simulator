@@ -495,8 +495,8 @@ export interface RegionRankingEntry {
   globalMastersSlots: number;
 }
 
-const RECENCY_WEIGHTS = [1.0, 0.7, 0.45, 0.25];
-const MAX_RECENT_EDITIONS = 4;
+const RECENCY_WEIGHTS = [0.9, 0.85, 0.75, 0.6, 0.45, 0.3];
+const MAX_RECENT_EDITIONS = 6;
 
 export function getOfficialRegionRanking(
   career?: CareerLedger,
@@ -582,10 +582,30 @@ export function getOfficialRegionRanking(
 
   if (hasIntlHistory) {
     const total = recentWindow.length;
+    // Primeiro contamos quantas vezes cada região teve campanha negativa confirmada na janela,
+    // para que UM único torneio ruim isolado nunca derrube uma região precocemente.
+    const flopCounts = new Map<string, number>();
+    for (const ed of recentWindow) {
+      for (const [rawReg, perf] of Object.entries(ed.regionScores ?? {})) {
+        const reg = normalizeRegion(rawReg, game);
+        if (!reg) continue;
+        const wr = perf.played > 0 ? perf.wins / perf.played : 0;
+        const floped =
+          perf.played >= 2 &&
+          perf.bestStage === "groups" &&
+          (wr < 0.35 || perf.coefPoints <= -6);
+        if (floped) flopCounts.set(reg, (flopCounts.get(reg) ?? 0) + 1);
+      }
+    }
+
+    // Fator de confiança da amostra: com poucos torneios internacionais na história recente,
+    // amortecemos a oscilação para evitar trocas precoces por 1 único campeonato.
+    const sampleConfidence = total <= 1 ? 0.45 : total === 2 ? 0.72 : 1.0;
+
     for (let i = total - 1; i >= 0; i--) {
       const ed = recentWindow[i];
       const distFromLatest = total - 1 - i; // 0 = mais recente
-      const weight = RECENCY_WEIGHTS[distFromLatest] ?? 0.25;
+      const weight = RECENCY_WEIGHTS[distFromLatest] ?? 0.3;
 
       for (const [rawReg, perf] of Object.entries(ed.regionScores ?? {})) {
         const reg = normalizeRegion(rawReg, game);
@@ -601,8 +621,6 @@ export function getOfficialRegionRanking(
           prevEdCoef: null,
         };
 
-        // Bônus de mérito e penalidade de pipocada entram DIRETO no Coeficiente de Momento,
-        // fazendo a região subir ou cair de posição na tabela de forma limpa e sequencial!
         const wr = perf.played > 0 ? perf.wins / perf.played : 0;
         const floped =
           perf.played >= 2 &&
@@ -610,16 +628,18 @@ export function getOfficialRegionRanking(
           (wr < 0.35 || perf.coefPoints <= -6);
         const playoffBoost =
           perf.bestStage === "champion"
-            ? 35
+            ? 32
             : perf.bestStage === "runnerup"
-              ? 20
+              ? 18
               : perf.bestStage === "playoffs" && wr >= 0.5
-                ? 15
+                ? 12
                 : 0;
-        const flopPenalty = floped ? 35 : 0;
+        // Só aplica penalidade pesada de queda quando a região confirma má fase em 2+ torneios.
+        const confirmedSlump = (flopCounts.get(reg) ?? 0) >= 2;
+        const flopPenalty = floped && confirmedSlump ? 26 : 0;
         const effectiveEdCoef = perf.coefPoints + playoffBoost - flopPenalty;
 
-        entry.momentumScore += effectiveEdCoef * weight;
+        entry.momentumScore += effectiveEdCoef * weight * sampleConfidence;
         entry.recentEditions += 1;
         if (distFromLatest === 0) entry.latestEdCoef = effectiveEdCoef;
         if (distFromLatest === 1) entry.prevEdCoef = effectiveEdCoef;
@@ -641,9 +661,22 @@ export function getOfficialRegionRanking(
   const hasAnyIntlActivity =
     hasIntlHistory || Array.from(statsMap.values()).some((s) => s.intlPoints !== 0);
 
-  // Ordenação EXCLUSIVAMENTE pelo Coeficiente de Momento Internacional (nunca por pontos locais infinitos!)
+  // Score consolidado para ordenação:
+  // Combina o Momento Recente (janela de 6 edições) com uma âncora de prestígio histórico
+  // (força base + pontos internacionais acumulados), evitando quedas precoces por 1 torneio ruim.
+  const editionsPlayed = fullIntlHistory.length;
+  const baseWeight = editionsPlayed >= 6 ? 0.35 : editionsPlayed >= 3 ? 0.65 : 1.0;
+  const consolidatedScore = (reg: string, s: { momentumScore: number; intlPoints: number }) => {
+    const base = (REGION_BASE_SCORE[reg] ?? 50) * baseWeight;
+    const legacyIntl = Math.min(80, Math.max(-30, s.intlPoints * 0.25));
+    return s.momentumScore + base + legacyIntl;
+  };
+
   const sorted = Array.from(statsMap.entries()).sort(([regA, a], [regB, b]) => {
     if (hasAnyIntlActivity) {
+      const scoreA = consolidatedScore(regA, a);
+      const scoreB = consolidatedScore(regB, b);
+      if (scoreA !== scoreB) return scoreB - scoreA;
       if (a.momentumScore !== b.momentumScore) return b.momentumScore - a.momentumScore;
       if (a.intlPoints !== b.intlPoints) return b.intlPoints - a.intlPoints;
     }
