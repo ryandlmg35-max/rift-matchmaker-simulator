@@ -43,6 +43,7 @@ import {
 import { electMatchMvp } from "./mvp";
 import {
   canonicalTournamentName,
+  ensureInternationalHost,
   extractSeasonFromChampName,
   getOfficialRegionRanking,
   inferTeamRegion,
@@ -1787,7 +1788,9 @@ function load(): Championship[] {
     // Legacy migration: pre-CS2 championships default to LoL; old division
     // tags are split into the standalone `serieB` block.
     const migrated = parsed.map((c) => {
-      const base = ensureTeamLogos(ensureTeamRosters(migrateChampionship({ ...c, game: c.game ?? "lol" })));
+      const base = ensureInternationalHost(
+        ensureTeamLogos(ensureTeamRosters(migrateChampionship({ ...c, game: c.game ?? "lol" }))),
+      );
       return {
         ...base,
         history: deduplicateHistoryList(base.history),
@@ -1969,7 +1972,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // roster real de 2026 na hora.
     setChampionships((prev) => [
       ...prev,
-      { ...ensureTeamLogos(ensureTeamRosters(c)), updatedAt: Date.now() },
+      {
+        ...ensureInternationalHost(ensureTeamLogos(ensureTeamRosters(c)), careerRef.current),
+        updatedAt: Date.now(),
+      },
     ]);
   }, []);
 

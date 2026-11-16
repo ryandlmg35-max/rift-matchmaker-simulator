@@ -400,6 +400,12 @@ export interface Championship {
   countsTowardsRanking?: boolean;
   /** Nível de prestígio internacional (multiplicador de pontos na carreira). */
   internationalLevel?: InternationalLevel;
+  /** País-sede do campeonato internacional (sigla ISO, ex: "KR", "FR", "BR"). */
+  hostCountry?: string;
+  /** Cidade-sede do campeonato internacional (ex: "Seul", "Paris", "São Paulo"). */
+  hostCity?: string;
+  /** Região anfitriã com leve favoritismo de torcida em casa (ex: "LCK", "LEC", "EU"). */
+  hostRegion?: string;
   /** @deprecated usar internationalLevel */
   isInternational?: boolean;
   hasSecondDivision?: boolean;

@@ -10,6 +10,7 @@ import type {
   Team,
 } from "./types";
 import { uid } from "./generate";
+import { inferTeamRegion, normalizeRegion } from "./international";
 import { effectiveRating, ensureRoster, rosterAverageAttrs } from "./players";
 
 export const NEUTRAL_FORM = 50;
@@ -99,6 +100,8 @@ export interface MatchSimulationContext {
   isIntl?: boolean;
   isPlayoff?: boolean;
   isFinal?: boolean;
+  hostRegion?: string;
+  game?: "lol" | "cs2";
   rosterA?: Player[];
   rosterB?: Player[];
   teamA?: Team;
@@ -149,6 +152,27 @@ export function winProbability(
       } else if (attrsB.intlExperience < 28 && attrsA.intlExperience >= 55) {
         prob += 0.07;
       }
+
+      // Fator sede (torcida em casa) e leve favoritismo das regiões Major:
+      const regA = normalizeRegion(
+        ctx.teamA?.region || inferTeamRegion(ctx.teamA?.name || ""),
+      );
+      const regB = normalizeRegion(
+        ctx.teamB?.region || inferTeamRegion(ctx.teamB?.name || ""),
+      );
+      if (ctx.hostRegion) {
+        const hostNorm = normalizeRegion(ctx.hostRegion);
+        if (regA === hostNorm && regB !== hostNorm) prob += 0.035;
+        else if (regB === hostNorm && regA !== hostNorm) prob -= 0.035;
+      }
+      const majorRegs =
+        ctx.game === "cs2"
+          ? new Set(["EU", "CIS", "NA", "SA"])
+          : new Set(["LCK", "LPL", "LEC", "LCS"]);
+      const aMajor = majorRegs.has(regA);
+      const bMajor = majorRegs.has(regB);
+      if (aMajor && !bMajor) prob += 0.025;
+      else if (bMajor && !aMajor) prob -= 0.025;
     }
 
     // 2. IMPACTO DE PLAYOFF / FINAIS (Sangue frio e Mentalidade):
@@ -303,6 +327,8 @@ export function simulateForMatch(
     isIntl: !!isIntlChamp,
     isPlayoff: !!isPlayoffMatch,
     isFinal: !!isFinalMatch,
+    hostRegion: championship.hostRegion,
+    game: (championship.game ?? "lol") as "lol" | "cs2",
     rosterA,
     rosterB,
     teamA,

@@ -770,6 +770,14 @@ function ChampionshipPage() {
                 <span className="text-sm uppercase tracking-widest text-muted-foreground">
                   {championship.region} · {championship.season}
                 </span>
+                {championship.hostCity && (
+                  <span className="inline-flex items-center gap-1.5 rounded border border-border/60 bg-black/30 px-2 py-0.5 text-xs font-mono text-muted-foreground">
+                    {championship.hostCountry ? (
+                      <CountryFlag code={championship.hostCountry} size="xs" />
+                    ) : null}
+                    <span>{championship.hostCity}</span>
+                  </span>
+                )}
               </div>
             </div>
           </div>

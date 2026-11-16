@@ -19,6 +19,7 @@ import {
   computeRegionSlots,
   getOfficialRegionRanking,
   normalizeRegion,
+  pickInternationalHost,
   planInternationalField,
   playInStructure,
 } from "./international";
@@ -815,6 +816,8 @@ export function buildChampionshipFromCircuitDef(
     };
   });
 
+  const venue = pickInternationalHost(fullName, "lol", `${year}`, career);
+
   return {
     id: uid(),
     name: fullName,
@@ -828,6 +831,7 @@ export function buildChampionshipFromCircuitDef(
     countsTowardsRanking: true,
     internationalLevel: def.level,
     scheduledMonth: def.month,
+    ...venue,
     updatedAt: Date.now(),
   };
 }
@@ -846,6 +850,11 @@ export function advanceInternationalEdition(
 ): Championship {
   const archived = archiveCompletedChampions(c);
   const nextSeason = nextSeasonLabel(c.season);
+  const nextVenue = pickInternationalHost(
+    c.name,
+    (c.game ?? "lol") as GameId,
+    nextSeason,
+  );
 
   // Preserva o formato exato (grupos, fases, regras) mas limpa os confrontos e times
   const freshPhases = buildFreshPhases(archived.phases, []);
@@ -854,6 +863,7 @@ export function advanceInternationalEdition(
     ...archived,
     id: c.id,          // Mantém o ID original — sem duplicar na tela inicial
     season: nextSeason,
+    ...nextVenue,
     teams: [],         // Vazio: usuário puxa os classificados manualmente
     formerTeams: [
       ...(c.teams ?? []),

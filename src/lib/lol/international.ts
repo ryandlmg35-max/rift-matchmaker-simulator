@@ -1,6 +1,7 @@
 ﻿import type {
   CareerLedger,
   CareerTeam,
+  Championship,
   GameId,
   GroupsConfig,
   Phase,
@@ -1252,5 +1253,99 @@ export function playInStructure(playInCount: number, qualifiersToMain: number): 
     groupCount: 1,
     qualifiersPerGroup: qualifiersToMain,
     deciderLabel: null,
+  };
+}
+
+export interface HostVenue {
+  hostCountry: string;
+  hostCity: string;
+  hostRegion: string;
+}
+
+const LOL_HOST_VENUES: HostVenue[] = [
+  { hostCountry: "KR", hostCity: "Seul", hostRegion: "LCK" },
+  { hostCountry: "KR", hostCity: "Busan", hostRegion: "LCK" },
+  { hostCountry: "CN", hostCity: "Xangai", hostRegion: "LPL" },
+  { hostCountry: "CN", hostCity: "Pequim", hostRegion: "LPL" },
+  { hostCountry: "CN", hostCity: "Chengdu", hostRegion: "LPL" },
+  { hostCountry: "FR", hostCity: "Paris", hostRegion: "LEC" },
+  { hostCountry: "DE", hostCity: "Berlim", hostRegion: "LEC" },
+  { hostCountry: "GB", hostCity: "Londres", hostRegion: "LEC" },
+  { hostCountry: "ES", hostCity: "Madri", hostRegion: "LEC" },
+  { hostCountry: "US", hostCity: "Los Angeles", hostRegion: "LCS" },
+  { hostCountry: "US", hostCity: "Nova York", hostRegion: "LCS" },
+  { hostCountry: "CA", hostCity: "Toronto", hostRegion: "LCS" },
+  { hostCountry: "BR", hostCity: "São Paulo", hostRegion: "CBLOL" },
+  { hostCountry: "BR", hostCity: "Rio de Janeiro", hostRegion: "CBLOL" },
+  { hostCountry: "TW", hostCity: "Taipei", hostRegion: "LCP" },
+  { hostCountry: "JP", hostCity: "Tóquio", hostRegion: "LCP" },
+];
+
+const CS2_HOST_VENUES: HostVenue[] = [
+  { hostCountry: "DE", hostCity: "Colônia", hostRegion: "EU" },
+  { hostCountry: "PL", hostCity: "Katowice", hostRegion: "EU" },
+  { hostCountry: "DK", hostCity: "Copenhague", hostRegion: "EU" },
+  { hostCountry: "FR", hostCity: "Paris", hostRegion: "EU" },
+  { hostCountry: "SE", hostCity: "Estocolmo", hostRegion: "EU" },
+  { hostCountry: "RO", hostCity: "Cluj-Napoca", hostRegion: "EU" },
+  { hostCountry: "KZ", hostCity: "Astana", hostRegion: "CIS" },
+  { hostCountry: "RS", hostCity: "Belgrado", hostRegion: "CIS" },
+  { hostCountry: "US", hostCity: "Dallas", hostRegion: "NA" },
+  { hostCountry: "US", hostCity: "Austin", hostRegion: "NA" },
+  { hostCountry: "BR", hostCity: "Rio de Janeiro", hostRegion: "SA" },
+  { hostCountry: "BR", hostCity: "São Paulo", hostRegion: "SA" },
+  { hostCountry: "CN", hostCity: "Xangai", hostRegion: "ASIA" },
+  { hostCountry: "AU", hostCity: "Sydney", hostRegion: "ASIA" },
+];
+
+function simpleHash(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Escolhe país, cidade e região anfitriã para um campeonato internacional.
+ * Dá preferência ponderada às regiões Major (Top 4 do ranking ou Major padrão)
+ * para manter o prestígio e variar a sede a cada edição.
+ */
+export function pickInternationalHost(
+  champName: string,
+  game: GameId = "lol",
+  season?: string,
+  career?: CareerLedger,
+): HostVenue {
+  const catalog = game === "cs2" ? CS2_HOST_VENUES : LOL_HOST_VENUES;
+  const ranking = getOfficialRegionRanking(career, game);
+  const top2 = new Set(ranking.slice(0, 2).map((r) => r.region));
+  const top4 = new Set(ranking.slice(0, 4).map((r) => r.region));
+
+  const weighted: HostVenue[] = [];
+  for (const v of catalog) {
+    const copies = top2.has(v.hostRegion) ? 4 : top4.has(v.hostRegion) ? 2 : 1;
+    for (let i = 0; i < copies; i++) weighted.push(v);
+  }
+
+  const key = `${game}|${canonicalTournamentName(champName)}|${(season ?? "2026").trim()}`;
+  const idx = simpleHash(key) % weighted.length;
+  return weighted[idx];
+}
+
+export function ensureInternationalHost(c: Championship, career?: CareerLedger): Championship {
+  const isIntl =
+    c.internationalLevel === "minor" ||
+    c.internationalLevel === "major" ||
+    c.isInternational ||
+    c.region === "Internacional";
+  if (!isIntl || (c.hostCity && c.hostCountry && c.hostRegion)) return c;
+  const venue = pickInternationalHost(c.name, (c.game ?? "lol") as GameId, c.season, career);
+  return {
+    ...c,
+    hostCountry: c.hostCountry ?? venue.hostCountry,
+    hostCity: c.hostCity ?? venue.hostCity,
+    hostRegion: c.hostRegion ?? venue.hostRegion,
   };
 }
