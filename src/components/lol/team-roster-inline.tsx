@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { ensureRoster, getResolvedAttrs, playerOverall } from "@/lib/lol/players";
 import type { GameId, Player, PlayerRole, Team } from "@/lib/lol/types";
 import { CountryFlag } from "./country-flag";
 import { PlayerAvatar } from "./player-avatar";
+import { PlayerProfileDrawer } from "./player-profile-drawer";
 
 const ROLE_ORDER: Record<PlayerRole, number> = {
   top: 0,
@@ -27,7 +29,15 @@ const CS2_ROLE_LABEL: Record<PlayerRole, string> = {
   support: "IGL",
 };
 
-function PlayerRowCard({ player, game = "lol" }: { player: Player; game?: GameId }) {
+function PlayerRowCard({
+  player,
+  game = "lol",
+  onSelect,
+}: {
+  player: Player;
+  game?: GameId;
+  onSelect?: (player: Player) => void;
+}) {
   const roleMap = game === "cs2" ? CS2_ROLE_LABEL : ROLE_LABEL;
   const attrs = getResolvedAttrs(
     player.attrs,
@@ -40,7 +50,8 @@ function PlayerRowCard({ player, game = "lol" }: { player: Player; game?: GameId
 
   return (
     <div
-      className={`flex items-center justify-between gap-2.5 border px-2.5 py-2 ${
+      onClick={() => onSelect?.(player)}
+      className={`flex cursor-pointer items-center justify-between gap-2.5 border px-2.5 py-2 transition-colors hover:border-gold/60 hover:bg-black/70 ${
         player.sub
           ? "border-border/50 bg-black/30 opacity-90"
           : "border-gold/25 bg-black/50"
@@ -99,6 +110,7 @@ function PlayerRowCard({ player, game = "lol" }: { player: Player; game?: GameId
  * bandeira do país, rota, idade e atributos).
  */
 export function TeamRosterInline({ team, game = "lol" }: { team?: Team | null; game?: GameId }) {
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   if (!team) return null;
   const roster = ensureRoster(team) ?? [];
   const starters = roster
@@ -138,7 +150,7 @@ export function TeamRosterInline({ team, game = "lol" }: { team?: Team | null; g
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {starters.map((p) => (
-          <PlayerRowCard key={p.id} player={p} game={game} />
+          <PlayerRowCard key={p.id} player={p} game={game} onSelect={setSelectedPlayer} />
         ))}
       </div>
 
@@ -149,10 +161,19 @@ export function TeamRosterInline({ team, game = "lol" }: { team?: Team | null; g
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {subs.map((p) => (
-              <PlayerRowCard key={p.id} player={p} game={game} />
+              <PlayerRowCard key={p.id} player={p} game={game} onSelect={setSelectedPlayer} />
             ))}
           </div>
         </div>
+      ) : null}
+
+      {selectedPlayer ? (
+        <PlayerProfileDrawer
+          player={selectedPlayer}
+          team={team}
+          game={game}
+          onClose={() => setSelectedPlayer(null)}
+        />
       ) : null}
     </div>
   );

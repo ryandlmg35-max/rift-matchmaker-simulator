@@ -23,6 +23,7 @@ import type { CareerLedger, Championship, GameId, Player, PlayerRole, Team } fro
 import { TeamLogo } from "./team-logo";
 import { CountryFlag } from "./country-flag";
 import { PlayerAvatar } from "./player-avatar";
+import { PlayerProfileDrawer } from "./player-profile-drawer";
 import { ensureRoster, pickStarters, playerOverall, rosterStrength } from "@/lib/lol/players";
 import { REAL_ROSTERS } from "@/lib/lol/real-rosters";
 import { CS2_ALL_TEAMS_DB, getCs2TeamRoster } from "@/lib/lol/cs2-seed";
@@ -50,6 +51,7 @@ export function TeamProfileDrawer({
   const { championships: storeChampionships, controlTeamRoster } = useStore();
   const effectiveChampionships = allChampionships && allChampionships.length > 0 ? allChampionships : storeChampionships;
   const [activeTab, setActiveTab] = useState<"trophies" | "roster" | "stats" | "history">("trophies");
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [manageMode, setManageMode] = useState(false);
   const [hireMode, setHireMode] = useState<"market" | "custom">("market");
   const [marketFilter, setMarketFilter] = useState<"accessible" | "free" | "all">("accessible");
@@ -1021,7 +1023,8 @@ export function TeamProfileDrawer({
                     return (
                       <div
                         key={player.id}
-                        className="rounded-xl border border-border/60 bg-card/40 p-3"
+                        onClick={() => setSelectedPlayer(player)}
+                        className="cursor-pointer rounded-xl border border-border/60 bg-card/40 p-3 transition-colors hover:border-gold/50 hover:bg-card/70"
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
@@ -1075,7 +1078,10 @@ export function TeamProfileDrawer({
                               </span>
                             </div>
                             {manageMode && (
-                              <div className="flex items-center gap-1 pl-1 border-l border-border/50">
+                              <div
+                                className="flex items-center gap-1 pl-1 border-l border-border/50"
+                                onClick={(e) => e.stopPropagation()}
+                              >
                                 <button
                                   type="button"
                                   title="Mover para reserva"
@@ -1139,7 +1145,8 @@ export function TeamProfileDrawer({
                     {subs.map((player) => (
                       <div
                         key={player.id}
-                        className="flex items-center justify-between rounded-xl border border-border/40 bg-card/20 p-2.5 opacity-80"
+                        onClick={() => setSelectedPlayer(player)}
+                        className="flex cursor-pointer items-center justify-between rounded-xl border border-border/40 bg-card/20 p-2.5 opacity-80 transition-colors hover:border-gold/40 hover:opacity-100"
                       >
                         <div className="flex items-center gap-2.5">
                           <span className="w-12 text-center rounded bg-muted/40 px-1 py-0.5 text-[11px] font-mono uppercase text-muted-foreground">
@@ -1154,7 +1161,10 @@ export function TeamProfileDrawer({
                             OVR {playerOverall(player)}
                           </span>
                           {manageMode && (
-                            <div className="flex items-center gap-1 pl-1 border-l border-border/50">
+                            <div
+                              className="flex items-center gap-1 pl-1 border-l border-border/50"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <button
                                 type="button"
                                 title="Promover para titular"
@@ -1225,6 +1235,14 @@ export function TeamProfileDrawer({
           )}
         </div>
       </div>
+      {selectedPlayer ? (
+        <PlayerProfileDrawer
+          player={selectedPlayer}
+          team={liveTeam}
+          game={activeGame}
+          onClose={() => setSelectedPlayer(null)}
+        />
+      ) : null}
     </div>
   );
 
