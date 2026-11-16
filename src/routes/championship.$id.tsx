@@ -43,6 +43,7 @@ import { ChampionCelebrationModal } from "@/components/lol/champion-celebration-
 import { LiveFinalModal } from "@/components/lol/live-final-modal";
 import { PressConferenceModal } from "@/components/lol/press-conference-modal";
 import { EliteEventPanel } from "@/components/lol/elite-event-panel";
+import { detectEliteEventType } from "@/lib/lol/international";
 import { OffseasonMarketDialog } from "@/components/lol/offseason-market";
 import { TeamProfileDrawer } from "@/components/lol/team-profile-drawer";
 import { CountryFlag } from "@/components/lol/country-flag";
@@ -566,9 +567,35 @@ function ChampionshipPage() {
   }, [poolPhases, currentPhase?.id, matchLookupTeams]);
 
   const divisionLabel = activeDivision === 1 ? "A" : "B";
+  const eliteEventType = detectEliteEventType(championship.name);
 
   return (
-    <div className="min-h-screen">
+    <div className="relative min-h-screen">
+      {eliteEventType ? (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-0 -z-10"
+          style={{
+            backgroundColor: eliteEventType === "worlds" ? "#030816" : "#0a0804",
+          }}
+        >
+          <div
+            className="absolute inset-0 bg-cover bg-center bg-fixed opacity-45"
+            style={{
+              backgroundImage: `url('/themes/${eliteEventType === "worlds" ? "worlds-arena.jpg" : "msi-arena.jpg"}')`,
+            }}
+          />
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage:
+                eliteEventType === "worlds"
+                  ? "radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.24), transparent 52%), radial-gradient(circle at 85% 90%, rgba(200, 170, 110, 0.14), transparent 45%), linear-gradient(180deg, rgba(3, 8, 22, 0.45) 0%, rgba(3, 8, 22, 0.84) 60%, rgba(2, 6, 18, 0.96) 100%)"
+                  : "radial-gradient(circle at 50% 0%, rgba(234, 179, 8, 0.24), transparent 52%), radial-gradient(circle at 85% 90%, rgba(245, 158, 11, 0.12), transparent 45%), linear-gradient(180deg, rgba(10, 8, 4, 0.45) 0%, rgba(10, 8, 4, 0.85) 60%, rgba(8, 6, 3, 0.96) 100%)",
+            }}
+          />
+        </div>
+      ) : null}
       <ConfirmDialog {...confirmDialog} />
       <header className="border-b border-border/60 bg-card/60 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
@@ -748,7 +775,12 @@ function ChampionshipPage() {
       <section
         className="border-b border-border/60"
         style={{
-          background: `linear-gradient(180deg, ${championship.accentColor ?? "oklch(0.28 0.06 240)"}22 0%, transparent 100%)`,
+          background:
+            eliteEventType === "worlds"
+              ? "linear-gradient(180deg, rgba(56, 189, 248, 0.14) 0%, transparent 100%)"
+              : eliteEventType === "msi"
+                ? "linear-gradient(180deg, rgba(234, 179, 8, 0.15) 0%, transparent 100%)"
+                : `linear-gradient(180deg, ${championship.accentColor ?? "oklch(0.28 0.06 240)"}22 0%, transparent 100%)`,
         }}
       >
         <div className="mx-auto max-w-6xl px-6 py-8">
