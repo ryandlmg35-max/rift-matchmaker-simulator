@@ -81,15 +81,14 @@ export function planPhaseAdvance(params: {
 
   const previousIdSet = new Set(previousIds);
   const isPlayIn = !!previous.internationalPlayIn || isPlayInPhase(previous);
-  const directIds =
-    target.directTeamIds ??
-    phaseTeamIdsInOrder(target).filter(
-      (teamId) => !previousIdSet.has(teamId) && divisionTeamIds.has(teamId),
-    );
-  // Só puxa times restantes da divisão como "diretos" quando a fase anterior é
-  // um Play-In (onde os cabeças de chave aguardam os vencedores do Play-In).
-  // Em Suíça/Grupos → Playoffs, apenas os classificados (`qualified`) avançam,
-  // evitando que eliminados do Play-In sejam puxados para os Playoffs.
+  // Em Suíça/Grupos → Playoffs (!isPlayIn), nunca reaproveita times já presentes em `target`
+  // nem os demais times da divisão — apenas `target.directTeamIds` (se houver) + `qualified`.
+  const directIds = isPlayIn
+    ? (target.directTeamIds ??
+        phaseTeamIdsInOrder(target).filter(
+          (teamId) => !previousIdSet.has(teamId) && divisionTeamIds.has(teamId),
+        ))
+    : (target.directTeamIds ?? []);
   const fallbackDirectIds = isPlayIn
     ? Array.from(divisionTeamIds).filter((id) => !previousIdSet.has(id))
     : [];
