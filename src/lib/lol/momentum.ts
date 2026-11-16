@@ -10,7 +10,7 @@ import type {
   Team,
 } from "./types";
 import { uid } from "./generate";
-import { inferTeamRegion, normalizeRegion } from "./international";
+import { detectEliteEventType, inferTeamRegion, normalizeRegion } from "./international";
 import { effectiveRating, ensureRoster, rosterAverageAttrs } from "./players";
 
 export const NEUTRAL_FORM = 50;
@@ -98,6 +98,7 @@ export function seasonRecords(phases: Phase[]): Map<string, SeasonRecord> {
 
 export interface MatchSimulationContext {
   isIntl?: boolean;
+  isEliteEvent?: boolean;
   isPlayoff?: boolean;
   isFinal?: boolean;
   hostRegion?: string;
@@ -179,7 +180,8 @@ export function winProbability(
     // Jogos de eliminação e finais exigem resiliência; times com baixa
     // mentalidade entregam vantagens sob o peso da torcida.
     if (ctx.isPlayoff || ctx.isFinal) {
-      const mult = ctx.isFinal ? 1.6 : 1.1;
+      const eliteBoost = ctx.isEliteEvent ? 1.25 : 1;
+      const mult = (ctx.isFinal ? 1.6 : 1.1) * eliteBoost;
       const mentDiff = attrsA.mentality - attrsB.mentality;
       const clutchDiff = attrsA.clutch - attrsB.clutch;
       prob += ((mentDiff / 100) * 0.07 + (clutchDiff / 100) * 0.07) * mult;
@@ -325,6 +327,7 @@ export function simulateForMatch(
 
   const ctx: MatchSimulationContext = {
     isIntl: !!isIntlChamp,
+    isEliteEvent: !!detectEliteEventType(championship.name),
     isPlayoff: !!isPlayoffMatch,
     isFinal: !!isFinalMatch,
     hostRegion: championship.hostRegion,

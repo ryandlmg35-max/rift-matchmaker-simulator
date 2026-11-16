@@ -42,6 +42,7 @@ import { SwissStageView } from "@/components/lol/swiss-stage-view";
 import { ChampionCelebrationModal } from "@/components/lol/champion-celebration-modal";
 import { LiveFinalModal } from "@/components/lol/live-final-modal";
 import { PressConferenceModal } from "@/components/lol/press-conference-modal";
+import { EliteEventPanel } from "@/components/lol/elite-event-panel";
 import { OffseasonMarketDialog } from "@/components/lol/offseason-market";
 import { TeamProfileDrawer } from "@/components/lol/team-profile-drawer";
 import { CountryFlag } from "@/components/lol/country-flag";
@@ -952,6 +953,7 @@ function ChampionshipPage() {
           </div>
         ) : currentPhase ? (
           <div className="space-y-6">
+            <EliteEventPanel championship={championship} currentPhase={currentPhase} />
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-display text-lg font-semibold uppercase tracking-wider text-foreground">

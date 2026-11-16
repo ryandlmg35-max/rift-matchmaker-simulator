@@ -4,10 +4,14 @@
   Championship,
   GameId,
   GroupsConfig,
+  Match,
   Phase,
+  Player,
+  PlayerRole,
   PlayoffsConfig,
   Team,
 } from "./types";
+import { effectiveRating, ensureRoster, pickStarters, playerOverall } from "./players";
 
 /**
  * Classificação automática de play-in internacional.
@@ -1348,4 +1352,285 @@ export function ensureInternationalHost(c: Championship, career?: CareerLedger):
     hostCity: c.hostCity ?? venue.hostCity,
     hostRegion: c.hostRegion ?? venue.hostRegion,
   };
+}
+
+// ---------- EVENTOS DE ELITE (WORLDS & MSI) ----------
+
+export type EliteEventType = "worlds" | "msi";
+
+export function detectEliteEventType(champName?: string | null): EliteEventType | null {
+  const n = (champName ?? "").toLowerCase();
+  if (/world|mundial/i.test(n) && !/copa do mundo|world cup|seleções/i.test(n)) return "worlds";
+  if (/\bmsi\b|mid-season|mid season|midseason/i.test(n)) return "msi";
+  return null;
+}
+
+const ELITE_ARENA_BY_CITY: Record<string, string> = {
+  Seul: "Gocheok Sky Dome",
+  Busan: "Sajik Arena",
+  Xangai: "Mercedes-Benz Arena",
+  Pequim: "National Indoor Stadium",
+  Chengdu: "Financial City Performing Arts Center",
+  Paris: "Accor Arena",
+  Berlim: "Uber Arena",
+  Londres: "The O2 Arena",
+  Madri: "WiZink Center",
+  "Los Angeles": "Intuit Dome",
+  "Nova York": "Madison Square Garden",
+  Toronto: "Scotiabank Arena",
+  "São Paulo": "Ginásio do Ibirapuera",
+  "Rio de Janeiro": "Jeunesse Arena",
+  Taipei: "Taipei Arena",
+  Tóquio: "Tokyo Dome",
+  Colônia: "LANXESS Arena",
+  Katowice: "Spodek Arena",
+  Copenhague: "Royal Arena",
+  Estocolmo: "Avicii Arena",
+  "Cluj-Napoca": "BTarena",
+  Astana: "Barys Arena",
+  Belgrado: "Štark Arena",
+  Dallas: "Kay Bailey Hutchison Arena",
+  Austin: "Moody Center",
+  Sydney: "Qudos Bank Arena",
+};
+
+export function getEliteArena(
+  hostCity?: string,
+  eventType?: EliteEventType | null,
+): { arena: string; subtitle: string } {
+  const arena = (hostCity && ELITE_ARENA_BY_CITY[hostCity]) || "Palco Principal Internacional";
+  const subtitle =
+    eventType === "worlds"
+      ? "Summoner's Cup · Palco Mundial"
+      : "Mid-Season Crown · Palco Global";
+  return { arena, subtitle };
+}
+
+/**
+ * Consequência real do MSI no Worlds:
+ * Retorna a região do último campeão do MSI para conceder +1 vaga no Worlds.
+ */
+export function getMsiChampionBonusRegion(
+  career?: CareerLedger,
+  championships?: Championship[],
+  game: GameId = "lol",
+): { region: string; teamName: string; season: string } | null {
+  // 1. Procura na lista de campeonatos do MSI (history mais recente)
+  const msiChamps = (championships ?? []).filter(
+    (c) => (c.game ?? "lol") === game && detectEliteEventType(c.name) === "msi",
+  );
+  for (const msi of msiChamps) {
+    const lastEntry = msi.history?.[0] ?? msi.history?.[msi.history.length - 1];
+    if (lastEntry?.teamName) {
+      const reg = normalizeRegion(
+        msi.teams.find((t) => t.name.toLowerCase() === lastEntry.teamName.toLowerCase())?.region ||
+          msi.formerTeams?.find((t) => t.name.toLowerCase() === lastEntry.teamName.toLowerCase())?.region ||
+          inferTeamRegion(lastEntry.teamName),
+      );
+      if (reg && reg !== "OUTROS") {
+        return { region: reg, teamName: lastEntry.teamName, season: lastEntry.splitLabel || msi.season || "" };
+      }
+    }
+  }
+
+  // 2. Fallback: último título do MSI no Hall da Fama
+  const msiTitles = (career?.titles ?? []).filter(
+    (t) => (t.game ?? "lol") === game && detectEliteEventType(t.champName) === "msi",
+  );
+  const latest = msiTitles[msiTitles.length - 1];
+  if (latest) {
+    const reg = normalizeRegion(inferTeamRegion(latest.teamName));
+    if (reg && reg !== "OUTROS") {
+      return { region: reg, teamName: latest.teamName, season: latest.label || "" };
+    }
+  }
+  return null;
+}
+
+/**
+ * Power Rankings Pré-Evento (Top 5 Favoritos + Principal Azarão) para Worlds e MSI.
+ */
+export function computeElitePowerRankings(
+  champ: Championship,
+  career?: CareerLedger,
+): {
+  topFavorites: { team: Team; rating: number; region: string }[];
+  darkHorse: { team: Team; rating: number; region: string } | null;
+} {
+  const game = (champ.game ?? "lol") as GameId;
+  const ranked = champ.teams
+    .map((team) => {
+      const ledgerRating = career?.[game]?.[team.name.trim().toLowerCase()]?.rating ?? 50;
+      const rating = Math.round(
+        effectiveRating(ledgerRating, ensureRoster(team), team.synergy, team.culture),
+      );
+      const region = normalizeRegion(team.region || inferTeamRegion(team.name));
+      return { team, rating, region };
+    })
+    .sort((a, b) => b.rating - a.rating);
+
+  const topFavorites = ranked.slice(0, 5);
+  const top5Ids = new Set(topFavorites.map((x) => x.team.id));
+  const darkHorse =
+    ranked
+      .filter((x) => !top5Ids.has(x.team.id))
+      .sort((a, b) => b.rating - a.rating)[0] ?? null;
+
+  return { topFavorites, darkHorse };
+}
+
+/**
+ * Sorteio protegido dos Potes na Rodada 1:
+ * Evita confrontos entre times da mesma região na abertura quando possível e pareia
+ * cabeças de chave fortes contra times de pote inferior.
+ */
+export function buildProtectedRound1Draw(
+  matches: Match[],
+  teams: Team[],
+  career?: CareerLedger,
+  game: GameId = "lol",
+): Match[] {
+  const r1 = matches.filter((m) => (m.round ?? 0) === 0 && !m.bye && m.teamAId && m.teamBId);
+  if (r1.length < 2) return matches;
+
+  const byId = new Map(teams.map((t) => [t.id, t]));
+  const scoreTeam = (id: string) => {
+    const t = byId.get(id);
+    if (!t) return 50;
+    const lr = career?.[game]?.[t.name.trim().toLowerCase()]?.rating ?? 50;
+    return effectiveRating(lr, ensureRoster(t), t.synergy, t.culture);
+  };
+  const regionOf = (id: string) => {
+    const t = byId.get(id);
+    return normalizeRegion(t?.region || inferTeamRegion(t?.name || ""));
+  };
+
+  const poolIds = r1
+    .flatMap((m) => [m.teamAId!, m.teamBId!])
+    .sort((a, b) => scoreTeam(b) - scoreTeam(a));
+
+  const half = Math.floor(poolIds.length / 2);
+  const potHigh = poolIds.slice(0, half);
+  const potLow = poolIds.slice(half).sort(() => Math.random() - 0.5);
+
+  const pairs: Array<[string, string]> = [];
+  const remainingLow = [...potLow];
+  for (const a of potHigh) {
+    const regA = regionOf(a);
+    let idx = remainingLow.findIndex((b) => regionOf(b) !== regA);
+    if (idx === -1) idx = 0;
+    const [b] = remainingLow.splice(idx, 1);
+    if (b) pairs.push([a, b]);
+  }
+
+  let pairIdx = 0;
+  return matches.map((m) => {
+    if ((m.round ?? 0) !== 0 || m.bye || !m.teamAId || !m.teamBId) return m;
+    const p = pairs[pairIdx++];
+    if (!p) return m;
+    return { ...m, teamAId: p[0], teamBId: p[1] };
+  });
+}
+
+/**
+ * Calcula o MVP das Finais (FMVP), o Quinteto Ideal do Evento (All-Tournament)
+ * e a narrativa da campanha do campeão.
+ */
+export function computeEliteAwards(champ: Championship): {
+  champion: Team | null;
+  fmvp: { player: Player; team: Team; score: number } | null;
+  allTournament: { role: PlayerRole; player: Player; team: Team; score: number }[];
+  campaignTag: string | null;
+} {
+  const allPhases = champ.phases;
+  const lastPhase = [...allPhases].reverse().find((p) => p.kind === "bracket" && p.matches.length > 0);
+  if (!lastPhase) {
+    return { champion: null, fmvp: null, allTournament: [], campaignTag: null };
+  }
+
+  const grandMatch =
+    lastPhase.matches.find((m) => m.bracketSide === "reset" && m.winnerId) ??
+    lastPhase.matches.find((m) => m.bracketSide === "grand" && m.winnerId) ??
+    lastPhase.matches.find((m) => !m.nextMatchId && m.winnerId);
+
+  if (!grandMatch?.winnerId) {
+    return { champion: null, fmvp: null, allTournament: [], campaignTag: null };
+  }
+
+  const pool = [...champ.teams, ...(champ.formerTeams ?? [])];
+  const champion = pool.find((t) => t.id === grandMatch.winnerId) ?? null;
+  if (!champion) {
+    return { champion: null, fmvp: null, allTournament: [], campaignTag: null };
+  }
+
+  // Contagem de MVPs e vitórias por jogador/time no torneio
+  const mvpCounts = new Map<string, number>();
+  const teamWins = new Map<string, number>();
+  const teamLosses = new Map<string, number>();
+  for (const ph of allPhases) {
+    for (const m of ph.matches) {
+      if (!m.winnerId || !m.teamAId || !m.teamBId || m.bye) continue;
+      teamWins.set(m.winnerId, (teamWins.get(m.winnerId) ?? 0) + 1);
+      const loserId = m.winnerId === m.teamAId ? m.teamBId : m.teamAId;
+      teamLosses.set(loserId, (teamLosses.get(loserId) ?? 0) + 1);
+      if (m.mvp?.playerName) {
+        const k = m.mvp.playerName.trim().toLowerCase();
+        mvpCounts.set(k, (mvpCounts.get(k) ?? 0) + 1);
+      }
+    }
+  }
+
+  // FMVP: prioriza MVP da Grande Final se houver, senão o melhor titular do campeão + MVPs
+  const champStarters = pickStarters(ensureRoster(champion) ?? []);
+  let fmvp: { player: Player; team: Team; score: number } | null = null;
+  const grandMvpIgn = grandMatch.mvp?.playerName?.trim().toLowerCase();
+  for (const p of champStarters) {
+    const ovr = playerOverall(p);
+    const isGrandMvp = grandMvpIgn && p.ign.trim().toLowerCase() === grandMvpIgn ? 25 : 0;
+    const mvps = (mvpCounts.get(p.ign.trim().toLowerCase()) ?? 0) * 6;
+    const sc = ovr + isGrandMvp + mvps;
+    if (!fmvp || sc > fmvp.score) {
+      fmvp = { player: p, team: champion, score: sc };
+    }
+  }
+
+  // Quinteto Ideal do Evento
+  const roles: PlayerRole[] = ["top", "jungle", "mid", "adc", "support"];
+  const allTournament: { role: PlayerRole; player: Player; team: Team; score: number }[] = [];
+  for (const role of roles) {
+    let best: { role: PlayerRole; player: Player; team: Team; score: number } | null = null;
+    for (const t of champ.teams) {
+      const wins = teamWins.get(t.id) ?? 0;
+      if (wins === 0) continue;
+      const starters = pickStarters(ensureRoster(t) ?? []);
+      const p = starters.find((s) => s.role === role);
+      if (!p) continue;
+      const ovr = playerOverall(p);
+      const mvps = (mvpCounts.get(p.ign.trim().toLowerCase()) ?? 0) * 5;
+      const champBonus = t.id === champion.id ? 6 : 0;
+      const sc = ovr + wins * 2 + mvps + champBonus;
+      if (!best || sc > best.score) {
+        best = { role, player: p, team: t, score: sc };
+      }
+    }
+    if (best) allTournament.push(best);
+  }
+
+  // Narrativa da campanha
+  const playInPhase = allPhases.find((p) => p.internationalPlayIn);
+  const cameFromPlayIn = !!playInPhase?.matches.some(
+    (m) => m.teamAId === champion.id || m.teamBId === champion.id,
+  );
+  const playoffLosses = lastPhase.matches.filter(
+    (m) => m.winnerId && m.winnerId !== champion.id && (m.teamAId === champion.id || m.teamBId === champion.id),
+  ).length;
+  const campaignTag = cameFromPlayIn
+    ? "Do Play-In ao Título Mundial"
+    : playoffLosses === 0
+      ? "Campeão Invicto nos Playoffs"
+      : (teamLosses.get(champion.id) ?? 0) <= 1
+        ? "Campanha Dominante"
+        : "Superação até a Taça";
+
+  return { champion, fmvp, allTournament, campaignTag };
 }

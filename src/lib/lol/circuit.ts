@@ -17,6 +17,7 @@ import {
 } from "./generate";
 import {
   computeRegionSlots,
+  getMsiChampionBonusRegion,
   getOfficialRegionRanking,
   normalizeRegion,
   pickInternationalHost,
@@ -709,14 +710,16 @@ export function pickInternationalTeams(
       }
     }
   } else if (def.id === "worlds") {
-    // 🏆 WORLDS: Vagas dinâmicas por região do Hall da Fama (computeRegionSlots)!
+    // 🏆 WORLDS: Vagas dinâmicas por região do Hall da Fama + bônus de +1 vaga ao campeão do MSI!
     const officialRanking = getOfficialRegionRanking(career, "lol");
+    const msiBonus = getMsiChampionBonusRegion(career, existingChamps, "lol");
     for (const reg of officialRegions) {
       const ranking = regionalRankings.get(reg);
       if (!ranking || ranking.length === 0) continue;
-      const quota =
+      const baseQuota =
         slotTable.get(reg)?.worlds ??
         (officialRanking.find((r) => r.region === reg)?.worldsSlots ?? 2);
+      const quota = msiBonus && msiBonus.region === reg ? baseQuota + 1 : baseQuota;
       const toTake = ranking.slice(0, quota);
       for (const team of toTake) {
         if (!seenNames.has(team.name.toLowerCase().trim())) {
