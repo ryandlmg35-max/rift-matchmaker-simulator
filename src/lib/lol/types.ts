@@ -38,6 +38,8 @@ export interface Player {
   attrs: PlayerAttrs;
   /** Sub (não entra na força do elenco enquanto há titular na função). */
   sub?: boolean;
+  /** Splits restantes no contrato atual (0 = fim de contrato / sem multa). */
+  contractSplits?: number;
   /** Criado manualmente pelo usuário (não vem do banco real). */
   custom?: boolean;
   /** Nome civil (quando o scrape trouxe). */

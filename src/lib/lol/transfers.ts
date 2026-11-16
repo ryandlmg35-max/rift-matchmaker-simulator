@@ -128,6 +128,38 @@ export function getPlayerSalary(
   return baseSalary;
 }
 
+/**
+ * Splits restantes no contrato atual de um jogador.
+ * Se não houver valor explícito, atribui deterministicamente 1 a 3 splits
+ * para evitar que todo mundo fique livre ou saia do nada ao mesmo tempo.
+ */
+export function getPlayerContractSplits(player: Player): number {
+  if (typeof player.contractSplits === "number") {
+    return Math.max(0, Math.round(player.contractSplits));
+  }
+  const key = `${player.ign}|${player.role}`;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+  return 1 + (Math.abs(h) % 3); // 1, 2 ou 3 splits
+}
+
+/**
+ * Multa rescisória (buyout) em K dólares para tirar um jogador sob contrato.
+ * Em fim de contrato (0 splits), a multa é zero.
+ */
+export function getPlayerBuyout(
+  player: Player,
+  teamRegionRaw?: string,
+  career?: CareerLedger,
+  game: GameId = "lol",
+): number {
+  const splits = getPlayerContractSplits(player);
+  if (splits <= 0) return 0;
+  const salary = getPlayerSalary(player, teamRegionRaw, career, game);
+  const subFactor = player.sub ? 0.45 : 1;
+  return Math.round(salary * (0.75 + splits * 0.6) * subFactor);
+}
+
 /** País nativo correspondente à região */
 export function getNativeCountryForRegion(regionRaw?: string): string {
   const r = (regionRaw ?? "").toUpperCase();
@@ -1023,6 +1055,8 @@ function moveSingleTeam(params: {
   isSerieB: boolean;
   externalLeagues?: MutableExternalLeague[];
   usedIgns?: Set<string>;
+  lockedIgns?: Set<string>;
+  isMidSplit?: boolean;
 }): {
   updatedTeam: Team;
   updatedAllTeams: Team[];
@@ -1039,6 +1073,8 @@ function moveSingleTeam(params: {
     isSerieB,
     externalLeagues = [],
     usedIgns = collectUsedIgns(allLeagueTeams),
+    lockedIgns,
+    isMidSplit = false,
   } = params;
   const roster = ensureRoster(team) ?? [];
   const starters = pickStarters(roster);
@@ -1094,11 +1130,17 @@ function moveSingleTeam(params: {
       const otherBudget = getTeamBaseBudget(other, region, false, isSerieB, career, game);
 
       for (const p of otherRoster) {
-        if (ownIgns.has(p.ign.trim().toLowerCase())) continue;
+        const pKey = p.ign.trim().toLowerCase();
+        if (ownIgns.has(pKey) || lockedIgns?.has(pKey)) continue;
         const target = starterByRole.get(p.role);
         if (!target) continue;
         const candOvr = playerOverall(p);
-        if (candOvr <= target.ovr + 2) continue;
+
+        const splits = getPlayerContractSplits(p);
+        const buyout = getPlayerBuyout(p, region, career, game);
+        if (isMidSplit && buyout > 0 && !p.sub) continue;
+        if (splits >= 2 && !p.sub && Math.random() < 0.65) continue;
+        if (candOvr <= target.ovr + (buyout > 0 ? 4 : 2)) continue;
 
         const isImp = isPlayerImport(p, region);
         if (isImp && currentImports >= 2 && !isPlayerImport(target.player, region)) continue;
@@ -1106,9 +1148,10 @@ function moveSingleTeam(params: {
         const salary = getPlayerSalary(p, region, career, game);
         const maxShare = candOvr >= 82 ? 0.55 : 0.46;
         if (salary > budget * maxShare) continue;
+        if (buyout > 0 && salary + buyout > budget * 0.85) continue;
 
-        // Puxa se for reserva lá ou se o comprador tiver ambição/orçamento superior
-        if (!p.sub && budget <= otherBudget + 100) continue;
+        // Puxa se for reserva/fim de contrato ou se o comprador tiver orçamento para cobrir multa + salto
+        if (!p.sub && buyout > 0 && budget <= otherBudget + Math.max(120, Math.round(buyout * 0.45))) continue;
 
         // Vontade do jogador: analisa se o novo time é melhor para ser campeão e evoluir
         if (
@@ -1137,10 +1180,15 @@ function moveSingleTeam(params: {
 
     if (bestIntra) {
       const { other, otherRoster, candidate, targetStarter } = bestIntra;
+      const buyout = getPlayerBuyout(candidate, region, career, game);
+      const salary = getPlayerSalary(candidate, region, career, game);
+      const candOvr = playerOverall(candidate);
+      lockedIgns?.add(candidate.ign.trim().toLowerCase());
       const bought: Player = {
         ...candidate,
         id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         sub: false,
+        contractSplits: candOvr >= 82 ? 3 : 2,
       };
       const buyerRoster = roster.map((p) => (p.id === targetStarter.id ? bought : p));
       const sellerNeedsSub = !candidate.sub;
@@ -1177,14 +1225,14 @@ function moveSingleTeam(params: {
         newsItem: {
           id: uid(),
           headline: sellerNeedsSub
-            ? `TROCA NA LIGA: ${team.name} acerta com ${candidate.ign} (ex-${other.name}) e envia ${targetStarter.ign} em troca!`
-            : `TRANSFERÊNCIA: ${team.name} contrata ${candidate.ign} junto à ${other.name} para a rota ${candidate.role.toUpperCase()}!`,
+            ? `TROCA NA LIGA: ${team.name} acerta com ${candidate.ign} (ex-${other.name})${buyout > 0 ? ` por $${buyout}k de multa` : ""} e envia ${targetStarter.ign} em troca!`
+            : `TRANSFERÊNCIA: ${team.name} contrata ${candidate.ign} junto à ${other.name}${buyout > 0 ? ` pagando multa de $${buyout}k` : " (fim de contrato)"}!`,
           fromTeam: other.name,
           toTeam: team.name,
           playerIgn: candidate.ign,
           role: candidate.role,
           kind: "trade",
-          value: getPlayerSalary(candidate, region, career, game),
+          value: salary + buyout,
           date: new Date().toISOString(),
         },
       };
@@ -1213,13 +1261,17 @@ function moveSingleTeam(params: {
           const sellerRoster = ensureRoster(seller) ?? [];
           const sellerBudget = getTeamBaseBudget(seller, ext.region, false, grp.isSerieB, career, game);
           for (const p of sellerRoster) {
-            if (ownIgns.has(p.ign.trim().toLowerCase())) continue;
-            if (leagueIgns.has(p.ign.trim().toLowerCase())) continue;
+            const pKey = p.ign.trim().toLowerCase();
+            if (ownIgns.has(pKey) || leagueIgns.has(pKey) || lockedIgns?.has(pKey)) continue;
             const target = starterByRole.get(p.role);
             if (!target) continue;
 
             const candOvr = playerOverall(p);
-            if (candOvr <= target.ovr + 2) continue;
+            const splits = getPlayerContractSplits(p);
+            const buyout = getPlayerBuyout(p, ext.region, career, game);
+            if (isMidSplit && buyout > 0 && !p.sub) continue;
+            if (splits >= 2 && !p.sub && Math.random() < 0.68) continue;
+            if (candOvr <= target.ovr + (buyout > 0 ? 4 : 2)) continue;
 
             const isImp = isPlayerImport(p, region);
             if (isImp && currentImports >= 2 && !isPlayerImport(target.player, region)) continue;
@@ -1227,9 +1279,10 @@ function moveSingleTeam(params: {
             const salary = getPlayerSalary(p, region, career, game);
             const maxShare = candOvr >= 82 ? 0.56 : 0.47;
             if (salary > budget * maxShare) continue;
+            if (buyout > 0 && salary + buyout > budget * 0.85) continue;
 
-            // Só tira titular de outra liga se oferecer salto financeiro/esportivo ou se o jogador for reserva lá
-            if (!p.sub && budget <= sellerBudget + 80) continue;
+            // Só tira titular sob contrato de outra liga se tiver dinheiro pra multa + salto salarial
+            if (!p.sub && buyout > 0 && budget <= sellerBudget + Math.max(100, Math.round(buyout * 0.45))) continue;
 
             if (
               !doesPlayerAcceptMove({
@@ -1267,10 +1320,15 @@ function moveSingleTeam(params: {
 
     if (bestGlobal) {
       const { extLeague, isSellerSerieB, seller, candidate, targetStarter, isImp } = bestGlobal;
+      const buyout = getPlayerBuyout(candidate, extLeague.region, career, game);
+      const salary = getPlayerSalary(candidate, region, career, game);
+      const candOvr = playerOverall(candidate);
+      lockedIgns?.add(candidate.ign.trim().toLowerCase());
       const bought: Player = {
         ...candidate,
         id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         sub: false,
+        contractSplits: candOvr >= 82 ? 3 : 2,
       };
       const replacedMech = getResolvedAttrs(
         targetStarter.attrs,
@@ -1316,13 +1374,13 @@ function moveSingleTeam(params: {
 
       const sellerExitNews: TransferNews = {
         id: uid(),
-        headline: `TRANSFERÊNCIA GLOBAL: ${candidate.ign} (${extLeague.champ.name}) foi contratado por ${team.name} (${region})!`,
+        headline: `TRANSFERÊNCIA GLOBAL: ${candidate.ign} (${extLeague.champ.name}) assina com ${team.name} (${region})${buyout > 0 ? ` — multa de $${buyout}k paga` : " (fim de contrato)"}!`,
         fromTeam: seller.name,
         toTeam: team.name,
         playerIgn: candidate.ign,
         role: candidate.role,
         kind: "trade",
-        value: getPlayerSalary(candidate, region, career, game),
+        value: salary + buyout,
         date: new Date().toISOString(),
       };
 
@@ -1408,6 +1466,8 @@ function moveSingleTeam(params: {
 
   if (bestPoolPick) {
     const signed = pool.splice(bestPoolPick.index, 1)[0];
+    const candOvr = playerOverall(signed);
+    lockedIgns?.add(signed.ign.trim().toLowerCase());
     const replacedStarter = bestPoolPick.targetStarter;
     const replacedMech = getResolvedAttrs(
       replacedStarter.attrs,
@@ -1421,6 +1481,7 @@ function moveSingleTeam(params: {
       ...signed,
       id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       sub: false,
+      contractSplits: candOvr >= 82 ? 3 : 2,
     };
 
     const releasedOld = (replacedStarter.age ?? 22) >= 26 || replacedMech < 70;
@@ -1513,8 +1574,15 @@ export function runAutonomousMarket(params: {
   career?: CareerLedger;
   freeAgentsPool?: Player[];
   intensity?: "normal" | "aggressive";
+  lockedIgns?: Set<string>;
 }): AutonomousMarketResult {
-  const { championship, allChampionships = [], career, intensity = "normal" } = params;
+  const {
+    championship,
+    allChampionships = [],
+    career,
+    intensity = "normal",
+    lockedIgns = new Set<string>(),
+  } = params;
 
   if (isBlockedInternational(championship)) {
     return {
@@ -1549,8 +1617,11 @@ export function runAutonomousMarket(params: {
 
   const processTeamList = (teams: Team[], isSerieB = false): Team[] => {
     let current = [...teams];
-    const moveChance = isSerieB ? 0.5 : intensity === "aggressive" ? 0.85 : 0.65;
+    const moveChance = isSerieB ? 0.25 : intensity === "aggressive" ? 0.42 : 0.30;
+    const maxMoves = Math.max(2, Math.ceil(teams.length * 0.35));
+    let movesCount = 0;
     for (const original of teams) {
+      if (movesCount >= maxMoves) break;
       if (Math.random() > moveChance) continue;
       const liveTeam = current.find((t) => t.id === original.id);
       if (!liveTeam) continue;
@@ -1564,9 +1635,13 @@ export function runAutonomousMarket(params: {
         isSerieB,
         externalLeagues,
         usedIgns,
+        lockedIgns,
       });
       current = res.updatedAllTeams;
-      if (res.newsItem) news.push(res.newsItem);
+      if (res.newsItem) {
+        news.push(res.newsItem);
+        movesCount++;
+      }
       if (res.externalUpdates.length > 0) externalUpdates.push(...res.externalUpdates);
     }
     return current;
@@ -1627,10 +1702,10 @@ export function runMidSplitMarketTick(params: {
     };
   }
 
-  // Ritmo orgânico ao longo do split: perdedor em má fase tem mais chance de mexer
+  // Ritmo orgânico ao longo do split: apenas ajustes pontuais em crise real
   const loserState = loserTeamId ? championship.momentum?.[loserTeamId] : undefined;
-  const inCrisis = (loserState?.form ?? 50) < 46 || (loserState?.streak ?? 0) <= -2;
-  const triggerChance = inCrisis ? 0.42 : 0.18;
+  const inCrisis = (loserState?.form ?? 50) < 44 || (loserState?.streak ?? 0) <= -3;
+  const triggerChance = inCrisis ? 0.14 : 0.04;
   if (Math.random() > triggerChance) {
     return {
       teams: championship.teams,
@@ -1675,6 +1750,7 @@ export function runMidSplitMarketTick(params: {
     isSerieB: division === 2,
     externalLeagues,
     usedIgns,
+    isMidSplit: true,
   });
 
   if (!res.newsItem) {
@@ -1712,6 +1788,7 @@ export function runGlobalTransferWindow(params: {
 
   let pool: Player[] | undefined;
   let totalMoves = 0;
+  const lockedIgns = new Set<string>();
 
   for (const id of localIds) {
     const champ = current.find((c) => c.id === id);
@@ -1723,6 +1800,7 @@ export function runGlobalTransferWindow(params: {
       career,
       freeAgentsPool: pool,
       intensity: "normal",
+      lockedIgns,
     });
     pool = res.remainingFreeAgents;
     totalMoves += res.news.length;

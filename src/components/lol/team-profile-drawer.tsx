@@ -27,7 +27,13 @@ import { PlayerProfileDrawer } from "./player-profile-drawer";
 import { ensureRoster, pickStarters, playerOverall, rosterStrength } from "@/lib/lol/players";
 import { REAL_ROSTERS } from "@/lib/lol/real-rosters";
 import { CS2_ALL_TEAMS_DB, getCs2TeamRoster } from "@/lib/lol/cs2-seed";
-import { getPlayerSalary, getTeamBaseBudget, isPlayerImport } from "@/lib/lol/transfers";
+import {
+  getPlayerBuyout,
+  getPlayerContractSplits,
+  getPlayerSalary,
+  getTeamBaseBudget,
+  isPlayerImport,
+} from "@/lib/lol/transfers";
 import { uid } from "@/lib/lol/generate";
 import { canonicalTournamentName, extractSeasonFromChampName } from "@/lib/lol/international";
 import { useStore } from "@/lib/lol/store";
@@ -130,6 +136,7 @@ export function TeamProfileDrawer({
       ...candidate,
       id: candidate.id || uid(),
       sub: hasStarterInRole,
+      contractSplits: playerOverall(candidate) >= 82 ? 3 : 2,
     };
     controlTeamRoster(activeGame, liveTeam.name, [...roster, hired], {
       removePlayerIgnFromOthers: candidate.ign,
@@ -212,6 +219,8 @@ export function TeamProfileDrawer({
     isFree: boolean;
     ovr: number;
     salary: number;
+    buyout: number;
+    contractSplits: number;
     status: MarketStatus;
     reason?: string;
   }
@@ -284,6 +293,11 @@ export function TeamProfileDrawer({
     return raw.map(({ player, currentTeam, teamName, isFree }) => {
       const ovr = playerOverall(player);
       const salary = getPlayerSalary(player, teamRegionEff, career, activeGame);
+      const contractSplits = isFree ? 0 : getPlayerContractSplits(player);
+      const buyout = isFree
+        ? 0
+        : getPlayerBuyout(player, currentTeam?.region || teamRegionEff, career, activeGame);
+      const totalCost = salary + buyout;
       const isImp = isPlayerImport(player, teamRegionEff);
       const replacingStarter = starters.find((s) => s.role === player.role);
       const replacingIsImp = replacingStarter ? isPlayerImport(replacingStarter, teamRegionEff) : false;
@@ -335,20 +349,27 @@ export function TeamProfileDrawer({
           isFree,
           ovr,
           salary,
+          buyout,
+          contractSplits,
           status: "uninterested" as const,
           reason: uninterestedReason,
         };
       }
 
-      if (salary > availableBudget) {
+      if (totalCost > availableBudget) {
         return {
           player,
           teamName,
           isFree,
           ovr,
           salary,
+          buyout,
+          contractSplits,
           status: "expensive" as const,
-          reason: `Sem orçamento ($${salary}k > $${availableBudget}k)`,
+          reason:
+            buyout > 0
+              ? `Sem orçamento (Salário $${salary}k + Multa $${buyout}k > $${availableBudget}k)`
+              : `Sem orçamento ($${salary}k > $${availableBudget}k)`,
         };
       }
 
@@ -358,6 +379,8 @@ export function TeamProfileDrawer({
         isFree,
         ovr,
         salary,
+        buyout,
+        contractSplits,
         status: "accessible" as const,
       };
     });
@@ -892,7 +915,7 @@ export function TeamProfileDrawer({
 
                                 <div className="flex items-center gap-2 shrink-0">
                                   <span className="text-[10px] font-mono text-muted-foreground">
-                                    ${item.salary}k
+                                    ${item.salary}k{item.buyout > 0 ? ` + $${item.buyout}k multa` : ""}
                                   </span>
                                   <span className="text-[11px] font-mono font-bold text-gold">
                                     {item.ovr}

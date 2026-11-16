@@ -14,7 +14,7 @@ import type { GameId, Player, PlayerRole, Team } from "@/lib/lol/types";
 import { useStore } from "@/lib/lol/store";
 import { getResolvedAttrs, playerOverall } from "@/lib/lol/players";
 import { getPlayerCareerAwards } from "@/lib/lol/mvp";
-import { getPlayerSalary } from "@/lib/lol/transfers";
+import { getPlayerBuyout, getPlayerContractSplits, getPlayerSalary } from "@/lib/lol/transfers";
 import { canonicalTournamentName } from "@/lib/lol/international";
 import { REAL_ROSTERS } from "@/lib/lol/real-rosters";
 import { CS2_ALL_TEAMS_DB, getCs2TeamRoster } from "@/lib/lol/cs2-seed";
@@ -231,6 +231,14 @@ export function PlayerProfileDrawer({
     () => getPlayerSalary(player, currentTeam?.region, career, game),
     [player, currentTeam?.region, career, game],
   );
+  const contractSplits = useMemo(
+    () => (currentTeam ? getPlayerContractSplits(player) : 0),
+    [player, currentTeam],
+  );
+  const buyout = useMemo(
+    () => (currentTeam ? getPlayerBuyout(player, currentTeam.region, career, game) : 0),
+    [player, currentTeam, career, game],
+  );
 
   const attrRows = [
     { label: "Mecânica", val: attrs.mechanics },
@@ -271,6 +279,13 @@ export function PlayerProfileDrawer({
                 {player.age ? <span className="font-mono">{player.age} anos</span> : null}
                 <span className="font-mono text-gold font-bold">OVR {ovr}</span>
                 <span className="font-mono">Salário est.: ${salary}k/ano</span>
+                {currentTeam ? (
+                  <span className="font-mono">
+                    {contractSplits > 0
+                      ? `Contrato: ${contractSplits} split${contractSplits > 1 ? "s" : ""} · Multa: $${buyout}k`
+                      : "Fim de contrato (sem multa)"}
+                  </span>
+                ) : null}
               </div>
 
               <div className="mt-2 flex items-center gap-2 text-xs">
