@@ -22,6 +22,7 @@ import {
 import { effectiveRating, ensureRoster, pickStarters, rosterAverageAttrs } from "@/lib/lol/players";
 import { useStore } from "@/lib/lol/store";
 import { seriesRanking } from "@/lib/lol/promotion";
+import { detectEliteEventType, getEliteArena } from "@/lib/lol/international";
 
 interface LiveFeedItem {
   id: string;
@@ -662,8 +663,11 @@ export function LiveFinalModal({
       );
     const ctx: MatchSimulationContext = {
       isIntl: !!isIntl,
+      isEliteEvent: !!detectEliteEventType(championship.name),
       isPlayoff: true,
       isFinal: isGrandFinal,
+      hostRegion: championship.hostRegion,
+      game: (championship.game ?? "lol") as "lol" | "cs2",
       rosterA: ensureRoster(teamA),
       rosterB: ensureRoster(teamB),
       teamA,
@@ -868,14 +872,50 @@ export function LiveFinalModal({
   const liveClockMins = snapshot.clockMins;
   const probAPct = Math.round(snapshot.liveProbA * 100);
 
+  const eliteEventType = detectEliteEventType(championship.name);
+  const eliteArena = eliteEventType ? getEliteArena(championship.hostCity, eliteEventType) : null;
+
   const modalContent = (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden border-2 border-gold bg-[#0b0d13] shadow-[0_0_50px_rgba(200,170,110,0.25)]">
+      <div
+        className={`relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden border-2 ${
+          eliteEventType === "worlds"
+            ? "border-sky-400/70 bg-[#040a18] shadow-[0_0_60px_rgba(56,189,248,0.28)]"
+            : eliteEventType === "msi"
+              ? "border-amber-400/80 bg-[#0b0804] shadow-[0_0_60px_rgba(234,179,8,0.28)]"
+              : "border-gold bg-[#0b0d13] shadow-[0_0_50px_rgba(200,170,110,0.25)]"
+        }`}
+      >
+        {eliteEventType ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 opacity-20 bg-cover bg-center"
+            style={{
+              backgroundImage: `url('/themes/${eliteEventType === "worlds" ? "worlds-arena.jpg" : "msi-arena.jpg"}')`,
+            }}
+          />
+        ) : null}
         {/* Top Broadcast Bar */}
-        <div className="flex items-center justify-between border-b border-gold/30 bg-gradient-to-r from-blood/25 via-gold/10 to-blood/25 px-5 py-3">
+        <div
+          className={`relative z-10 flex items-center justify-between border-b px-5 py-3 ${
+            eliteEventType === "worlds"
+              ? "border-sky-400/35 bg-gradient-to-r from-sky-500/25 via-slate-950/90 to-amber-500/15"
+              : eliteEventType === "msi"
+                ? "border-amber-400/35 bg-gradient-to-r from-amber-500/25 via-stone-950/90 to-yellow-500/15"
+                : "border-gold/30 bg-gradient-to-r from-blood/25 via-gold/10 to-blood/25"
+          }`}
+        >
           <div className="flex items-center gap-3">
             {!seriesWinnerSide ? (
-              <span className="inline-flex items-center gap-1.5 rounded bg-blood px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white ${
+                  eliteEventType === "worlds"
+                    ? "bg-sky-600"
+                    : eliteEventType === "msi"
+                      ? "bg-amber-600"
+                      : "bg-blood"
+                }`}
+              >
                 <Radio className="h-3 w-3 animate-pulse" /> AO VIVO
               </span>
             ) : (
@@ -884,11 +924,18 @@ export function LiveFinalModal({
               </span>
             )}
             <div>
-              <p className="font-display text-sm font-bold uppercase tracking-widest text-gold">
+              <p
+                className={`font-display text-sm font-bold uppercase tracking-widest ${
+                  eliteEventType === "worlds" ? "text-sky-300" : "text-gold"
+                }`}
+              >
                 {championship.name} {championship.season ? `· ${championship.season}` : ""}
               </p>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
                 {isGrandFinal ? "Grande Final" : match.roundName || "Partida Oficial"} • Melhor de {match.bestOf} (Vence quem fizer {needed})
+                {eliteArena
+                  ? ` • ${eliteArena.arena}${championship.hostCity ? ` (${championship.hostCity})` : ""}`
+                  : ""}
               </p>
             </div>
           </div>
