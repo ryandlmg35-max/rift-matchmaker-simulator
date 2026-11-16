@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Trophy,
@@ -24,6 +24,9 @@ import { TeamLogo } from "./team-logo";
 import { CountryFlag } from "./country-flag";
 import { PlayerAvatar } from "./player-avatar";
 import { ensureRoster, pickStarters, playerOverall, rosterStrength } from "@/lib/lol/players";
+import { REAL_ROSTERS } from "@/lib/lol/real-rosters";
+import { CS2_ALL_TEAMS_DB, getCs2TeamRoster } from "@/lib/lol/cs2-seed";
+import { getPlayerSalary, getTeamBaseBudget, isPlayerImport } from "@/lib/lol/transfers";
 import { uid } from "@/lib/lol/generate";
 import { canonicalTournamentName, extractSeasonFromChampName } from "@/lib/lol/international";
 import { useStore } from "@/lib/lol/store";
@@ -49,10 +52,13 @@ export function TeamProfileDrawer({
   const [activeTab, setActiveTab] = useState<"trophies" | "roster" | "stats" | "history">("trophies");
   const [manageMode, setManageMode] = useState(false);
   const [hireMode, setHireMode] = useState<"market" | "custom">("market");
+  const [marketFilter, setMarketFilter] = useState<"accessible" | "free" | "all">("accessible");
+  const [marketRoleFilter, setMarketRoleFilter] = useState<"all" | PlayerRole>("all");
+  const [marketLimit, setMarketLimit] = useState(40);
   const [marketQuery, setMarketQuery] = useState("");
   const [customIgn, setCustomIgn] = useState("");
   const [customRole, setCustomRole] = useState<PlayerRole>("mid");
-  const [customOvr, setCustomOvr] = useState<number>(75);
+  const [customOvr, setCustomOvr] = useState<number>(65);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -130,7 +136,7 @@ export function TeamProfileDrawer({
 
   const handleHireCustom = () => {
     const ign = customIgn.trim();
-    if (!ign) return;
+    if (!ign || customEstimatedSalary > availableBudget) return;
     const clamped = Math.max(20, Math.min(98, Math.round(customOvr)));
     const hasStarterInRole = roster.some((p) => !p.sub && p.role === customRole);
     const newPlayer: Player = {
@@ -155,38 +161,269 @@ export function TeamProfileDrawer({
     setCustomIgn("");
   };
 
-  const marketCandidates = manageMode
-    ? (() => {
-        const currentIgns = new Set(roster.map((p) => p.ign.trim().toLowerCase()));
-        const seen = new Set<string>();
-        const list: { player: Player; teamName: string; ovr: number }[] = [];
-        for (const c of storeChampionships) {
-          if ((c.game ?? "lol") !== activeGame) continue;
-          for (const t of [...c.teams, ...(c.serieB?.teams ?? [])]) {
-            if (t.name.trim().toLowerCase() === normKey) continue;
-            for (const p of t.roster ?? []) {
-              const key = p.ign.trim().toLowerCase();
-              if (!key || currentIgns.has(key) || seen.has(key)) continue;
-              seen.add(key);
-              list.push({ player: p, teamName: t.name, ovr: playerOverall(p) });
-            }
+  const careerEntry = career?.[activeGame]?.[normKey];
+
+  const isSerieB = useMemo(() => {
+    if (championship?.serieB?.teams.some((t) => t.name.trim().toLowerCase() === normKey)) {
+      return true;
+    }
+    return storeChampionships.some(
+      (c) =>
+        (c.game ?? "lol") === activeGame &&
+        c.serieB?.teams.some((t) => t.name.trim().toLowerCase() === normKey),
+    );
+  }, [championship, storeChampionships, activeGame, normKey]);
+
+  const teamBudget = useMemo(
+    () =>
+      getTeamBaseBudget(
+        liveTeam,
+        liveTeam.region || championship?.region,
+        (careerEntry?.titles ?? 0) > 0,
+        isSerieB,
+        career,
+        activeGame,
+      ),
+    [liveTeam, championship?.region, careerEntry?.titles, isSerieB, career, activeGame],
+  );
+
+  const currentPayroll = useMemo(
+    () =>
+      roster.reduce(
+        (sum, p) => sum + getPlayerSalary(p, liveTeam.region || championship?.region, career, activeGame),
+        0,
+      ),
+    [roster, liveTeam.region, championship?.region, career, activeGame],
+  );
+
+  const availableBudget = Math.max(0, teamBudget - currentPayroll);
+  const teamRegionEff = liveTeam.region || championship?.region;
+  const currentStarterImports = useMemo(
+    () => starters.filter((p) => isPlayerImport(p, teamRegionEff)).length,
+    [starters, teamRegionEff],
+  );
+
+  type MarketStatus = "accessible" | "expensive" | "uninterested";
+  interface MarketItem {
+    player: Player;
+    teamName: string;
+    isFree: boolean;
+    ovr: number;
+    salary: number;
+    status: MarketStatus;
+    reason?: string;
+  }
+
+  const evaluatedMarket = useMemo<MarketItem[]>(() => {
+    if (!manageMode) return [];
+    const currentIgns = new Set(roster.map((p) => p.ign.trim().toLowerCase()));
+    const seen = new Set<string>();
+    const raw: { player: Player; currentTeam: Team | null; teamName: string; isFree: boolean }[] = [];
+
+    // 1. Jogadores nos campeonatos ativos do jogo
+    for (const c of storeChampionships) {
+      if ((c.game ?? "lol") !== activeGame) continue;
+      for (const t of [...c.teams, ...(c.serieB?.teams ?? [])]) {
+        if (t.name.trim().toLowerCase() === normKey) continue;
+        for (const p of t.roster ?? []) {
+          const key = p.ign.trim().toLowerCase();
+          if (!key || currentIgns.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          raw.push({
+            player: p,
+            currentTeam: t,
+            teamName: t.name,
+            isFree: false,
+          });
+        }
+      }
+    }
+
+    // 2. Banco completo do jogo (ligas não abertas ou jogadores demitidos -> agentes livres)
+    if (activeGame === "lol") {
+      for (const [reg, teams] of Object.entries(REAL_ROSTERS)) {
+        for (const st of teams) {
+          const built = ensureRoster({ id: "", name: st.name, tag: "", region: reg }) ?? [];
+          for (const p of built) {
+            const key = p.ign.trim().toLowerCase();
+            if (!key || currentIgns.has(key) || seen.has(key)) continue;
+            seen.add(key);
+            raw.push({
+              player: { ...p, sub: false },
+              currentTeam: null,
+              teamName: `Livre (${reg})`,
+              isFree: true,
+            });
           }
         }
-        const q = marketQuery.trim().toLowerCase();
-        return list
-          .filter(
-            (item) =>
-              !q ||
-              item.player.ign.toLowerCase().includes(q) ||
-              item.teamName.toLowerCase().includes(q) ||
-              roleLabel(item.player.role).toLowerCase().includes(q),
-          )
-          .sort((a, b) => b.ovr - a.ovr)
-          .slice(0, 12);
-      })()
-    : [];
+      }
+    } else {
+      for (const spec of CS2_ALL_TEAMS_DB) {
+        const built = getCs2TeamRoster(spec.name, spec.tag) ?? [];
+        for (const p of built) {
+          const key = p.ign.trim().toLowerCase();
+          if (!key || currentIgns.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          raw.push({
+            player: { ...p, sub: false },
+            currentTeam: null,
+            teamName: `Livre (${spec.region})`,
+            isFree: true,
+          });
+        }
+      }
+    }
 
-  const careerEntry = career?.[game]?.[normKey];
+    const teamPrestige = careerEntry?.rating ?? 50;
+    const teamCulture = liveTeam.culture ?? 50;
+    const hasTitles = (careerEntry?.titles ?? 0) > 0;
+    const teamAvgOvr = currentStrength || 60;
+
+    return raw.map(({ player, currentTeam, teamName, isFree }) => {
+      const ovr = playerOverall(player);
+      const salary = getPlayerSalary(player, teamRegionEff, career, activeGame);
+      const isImp = isPlayerImport(player, teamRegionEff);
+      const replacingStarter = starters.find((s) => s.role === player.role);
+      const replacingIsImp = replacingStarter ? isPlayerImport(replacingStarter, teamRegionEff) : false;
+      const projectedImports =
+        currentStarterImports + (isImp && !replacingIsImp ? 1 : 0);
+
+      let uninterestedReason: string | undefined;
+
+      if (isSerieB && ovr >= 76 && !player.sub) {
+        uninterestedReason = "Não aceita jogar a Série B";
+      } else if (ovr >= 82 && teamCulture < 38 && !hasTitles) {
+        uninterestedReason = "Vestiário em crise para o nível dele";
+      } else if (ovr >= 82) {
+        const minLevel = ovr >= 86 ? ovr - 11 : ovr - 13;
+        if (teamAvgOvr < minLevel && teamPrestige < 58 && !hasTitles) {
+          uninterestedReason = "Exige elenco/prestígio para brigar por título";
+        }
+      }
+
+      if (!uninterestedReason && isImp && ovr >= 80 && teamAvgOvr < 72 && teamPrestige < 54 && teamCulture < 52) {
+        uninterestedReason = "Import de elite exige projeto mais forte";
+      }
+
+      if (!uninterestedReason && isImp && projectedImports > 2) {
+        uninterestedReason = "Limite de 2 imports titulares atingido";
+      }
+
+      if (!uninterestedReason && currentTeam && !player.sub) {
+        const fromStarters = pickStarters(currentTeam.roster ?? []);
+        const fromAvg =
+          fromStarters.length > 0
+            ? fromStarters.reduce((acc, s) => acc + playerOverall(s), 0) / fromStarters.length
+            : 60;
+        const fromPrestige =
+          career?.[activeGame]?.[currentTeam.name.trim().toLowerCase()]?.rating ?? 50;
+        const betterProject =
+          teamAvgOvr >= fromAvg - 2 ||
+          teamPrestige >= fromPrestige + 4 ||
+          teamCulture >= (currentTeam.culture ?? 50) + 10;
+        if (!betterProject) {
+          uninterestedReason = `Prefere seguir no projeto da ${currentTeam.name}`;
+        }
+      }
+
+      if (uninterestedReason) {
+        return {
+          player,
+          teamName,
+          isFree,
+          ovr,
+          salary,
+          status: "uninterested" as const,
+          reason: uninterestedReason,
+        };
+      }
+
+      if (salary > availableBudget) {
+        return {
+          player,
+          teamName,
+          isFree,
+          ovr,
+          salary,
+          status: "expensive" as const,
+          reason: `Sem orçamento ($${salary}k > $${availableBudget}k)`,
+        };
+      }
+
+      return {
+        player,
+        teamName,
+        isFree,
+        ovr,
+        salary,
+        status: "accessible" as const,
+      };
+    });
+  }, [
+    manageMode,
+    roster,
+    storeChampionships,
+    activeGame,
+    normKey,
+    teamRegionEff,
+    career,
+    careerEntry,
+    liveTeam.culture,
+    currentStrength,
+    starters,
+    currentStarterImports,
+    isSerieB,
+    availableBudget,
+  ]);
+
+  const marketCounts = useMemo(
+    () => ({
+      accessible: evaluatedMarket.filter((m) => m.status === "accessible").length,
+      free: evaluatedMarket.filter((m) => m.isFree).length,
+      all: evaluatedMarket.length,
+    }),
+    [evaluatedMarket],
+  );
+
+  const filteredMarket = useMemo(() => {
+    const q = marketQuery.trim().toLowerCase();
+    return evaluatedMarket
+      .filter((item) => {
+        if (marketFilter === "accessible" && item.status !== "accessible") return false;
+        if (marketFilter === "free" && !item.isFree) return false;
+        if (marketRoleFilter !== "all" && item.player.role !== marketRoleFilter) return false;
+        if (!q) return true;
+        return (
+          item.player.ign.toLowerCase().includes(q) ||
+          item.teamName.toLowerCase().includes(q) ||
+          (item.player.country ?? "").toLowerCase().includes(q) ||
+          roleLabel(item.player.role).toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        const rank = (s: MarketStatus) => (s === "accessible" ? 0 : s === "expensive" ? 1 : 2);
+        if (marketFilter === "all") {
+          const rDiff = rank(a.status) - rank(b.status);
+          if (rDiff !== 0) return rDiff;
+        }
+        return b.ovr - a.ovr;
+      });
+  }, [evaluatedMarket, marketFilter, marketRoleFilter, marketQuery, activeGame]);
+
+  const customEstimatedSalary = useMemo(() => {
+    const clamped = Math.max(20, Math.min(98, Math.round(customOvr)));
+    return getPlayerSalary(
+      {
+        id: "tmp",
+        ign: customIgn || "Novo",
+        role: customRole,
+        attrs: { mechanics: clamped, gameIq: clamped, clutch: clamped, mentality: clamped },
+      },
+      teamRegionEff,
+      career,
+      activeGame,
+    );
+  }, [customOvr, customIgn, customRole, teamRegionEff, career, activeGame]);
 
   const matchTeam = (name?: string, tag?: string) => {
     if (!name) return false;
@@ -544,57 +781,172 @@ export function TeamProfileDrawer({
 
                   {hireMode === "market" ? (
                     <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/50 bg-black/30 px-2.5 py-1.5 text-[10px] font-mono">
+                        <span className="text-muted-foreground">
+                          Orçamento: <strong className="text-foreground">${teamBudget}k</strong> · Folha:{" "}
+                          <strong className="text-foreground">${currentPayroll}k</strong>
+                        </span>
+                        <span>
+                          Livre:{" "}
+                          <strong className={availableBudget > 80 ? "text-emerald-300" : "text-amber-300"}>
+                            ${availableBudget}k
+                          </strong>{" "}
+                          · Imports:{" "}
+                          <strong className={currentStarterImports >= 2 ? "text-amber-300" : "text-foreground"}>
+                            {currentStarterImports}/2
+                          </strong>
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1 text-[10px] font-mono">
+                          {[
+                            { id: "accessible" as const, label: `Acessíveis (${marketCounts.accessible})` },
+                            { id: "free" as const, label: `Livres (${marketCounts.free})` },
+                            { id: "all" as const, label: `Todos (${marketCounts.all})` },
+                          ].map((tab) => (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              onClick={() => {
+                                setMarketFilter(tab.id);
+                                setMarketLimit(40);
+                              }}
+                              className={`rounded border px-2 py-0.5 ${
+                                marketFilter === tab.id
+                                  ? "border-gold/60 bg-gold/20 text-gold"
+                                  : "border-border/50 text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+                        <select
+                          value={marketRoleFilter}
+                          onChange={(e) => setMarketRoleFilter(e.target.value as "all" | PlayerRole)}
+                          className="rounded border border-border/60 bg-black/30 px-2 py-0.5 text-[10px] font-mono text-foreground focus:border-gold/50 focus:outline-none"
+                        >
+                          <option value="all">Todas funções</option>
+                          {(["top", "jungle", "mid", "adc", "support"] as PlayerRole[]).map((r) => (
+                            <option key={r} value={r}>
+                              {roleLabel(r)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
                       <div className="relative">
                         <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
                         <input
                           type="text"
                           value={marketQuery}
-                          onChange={(e) => setMarketQuery(e.target.value)}
-                          placeholder="Buscar jogador por nick, time ou função..."
+                          onChange={(e) => {
+                            setMarketQuery(e.target.value);
+                            setMarketLimit(40);
+                          }}
+                          placeholder="Buscar jogador por nick, time, país ou função..."
                           className="w-full rounded border border-border/60 bg-black/30 py-1.5 pl-8 pr-2.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-gold/50 focus:outline-none"
                         />
                       </div>
-                      <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
-                        {marketCandidates.length === 0 ? (
-                          <p className="py-2 text-center text-[11px] text-muted-foreground">
-                            Nenhum jogador encontrado.
+
+                      <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+                        {filteredMarket.length === 0 ? (
+                          <p className="py-3 text-center text-[11px] text-muted-foreground">
+                            {marketFilter === "accessible"
+                              ? "Nenhum jogador acessível com esse filtro. Demita alguém para liberar folha ou veja a aba Todos."
+                              : "Nenhum jogador encontrado."}
                           </p>
                         ) : (
-                          marketCandidates.map(({ player, teamName, ovr }) => (
-                            <div
-                              key={`${teamName}-${player.id}-${player.ign}`}
-                              className="flex items-center justify-between rounded border border-border/40 bg-black/25 px-2.5 py-1.5"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] font-mono text-muted-foreground">
-                                  {roleLabel(player.role)}
-                                </span>
-                                <span className="truncate text-xs font-bold text-foreground">
-                                  {player.ign}
-                                </span>
-                                <span className="truncate text-[10px] text-muted-foreground">
-                                  ({teamName})
-                                </span>
+                          <>
+                            {filteredMarket.slice(0, marketLimit).map((item) => (
+                              <div
+                                key={`${item.teamName}-${item.player.id}-${item.player.ign}`}
+                                className={`flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 ${
+                                  item.status === "accessible"
+                                    ? "border-border/50 bg-black/25"
+                                    : "border-border/30 bg-black/15 opacity-75"
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="rounded bg-muted/50 px-1 py-0.5 text-[10px] font-mono text-muted-foreground shrink-0">
+                                      {roleLabel(item.player.role)}
+                                    </span>
+                                    <CountryFlag code={item.player.country} size="xs" />
+                                    <span className="truncate text-xs font-bold text-foreground">
+                                      {item.player.ign}
+                                    </span>
+                                    <span className="truncate text-[10px] text-muted-foreground">
+                                      · {item.teamName}
+                                    </span>
+                                  </div>
+                                  {item.reason && (
+                                    <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                                      {item.reason}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[10px] font-mono text-muted-foreground">
+                                    ${item.salary}k
+                                  </span>
+                                  <span className="text-[11px] font-mono font-bold text-gold">
+                                    {item.ovr}
+                                  </span>
+                                  {item.status === "accessible" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleHireFromMarket(item.player)}
+                                      className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/25"
+                                    >
+                                      Contratar
+                                    </button>
+                                  ) : item.status === "expensive" ? (
+                                    <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono text-amber-300">
+                                      Caro
+                                    </span>
+                                  ) : (
+                                    <span className="rounded border border-border/40 bg-black/30 px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+                                      Recusa
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className="text-[11px] font-mono font-bold text-gold">
-                                  {ovr}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleHireFromMarket(player)}
-                                  className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/25"
-                                >
-                                  Contratar
-                                </button>
-                              </div>
-                            </div>
-                          ))
+                            ))}
+                            {filteredMarket.length > marketLimit && (
+                              <button
+                                type="button"
+                                onClick={() => setMarketLimit((l) => l + 40)}
+                                className="w-full rounded border border-border/50 bg-black/25 py-1.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:border-gold/40 hover:text-gold"
+                              >
+                                Mostrar mais ({filteredMarket.length - marketLimit} restantes)
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-border/50 bg-black/30 px-2.5 py-1.5 text-[10px] font-mono">
+                        <span className="text-muted-foreground">
+                          Salário estimado: <strong className="text-gold">${customEstimatedSalary}k</strong>
+                        </span>
+                        <span>
+                          Livre:{" "}
+                          <strong
+                            className={
+                              customEstimatedSalary <= availableBudget
+                                ? "text-emerald-300"
+                                : "text-blood"
+                            }
+                          >
+                            ${availableBudget}k
+                          </strong>
+                        </span>
+                      </div>
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <input
                           type="text"
@@ -651,10 +1003,10 @@ export function TeamProfileDrawer({
                         <button
                           type="button"
                           onClick={handleHireCustom}
-                          disabled={!customIgn.trim()}
+                          disabled={!customIgn.trim() || customEstimatedSalary > availableBudget}
                           className="rounded border border-emerald-500/40 bg-emerald-500/20 px-3 py-1 text-[11px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-40"
                         >
-                          Contratar
+                          {customEstimatedSalary > availableBudget ? "Sem orçamento" : "Contratar"}
                         </button>
                       </div>
                     </div>
