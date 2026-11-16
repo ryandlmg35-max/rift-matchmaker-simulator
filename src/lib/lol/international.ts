@@ -1415,12 +1415,34 @@ export function getMsiChampionBonusRegion(
   championships?: Championship[],
   game: GameId = "lol",
 ): { region: string; teamName: string; season: string } | null {
-  // 1. Procura na lista de campeonatos do MSI (history mais recente)
   const msiChamps = (championships ?? []).filter(
     (c) => (c.game ?? "lol") === game && detectEliteEventType(c.name) === "msi",
   );
+
+  // 1. Se o MSI atual já tem campeão definido na chave (mesmo antes de arquivar)
   for (const msi of msiChamps) {
-    const lastEntry = msi.history?.[0] ?? msi.history?.[msi.history.length - 1];
+    const lastBracket = [...msi.phases].reverse().find((p) => p.kind === "bracket" && p.matches.length > 0);
+    const grand =
+      lastBracket?.matches.find((m) => m.bracketSide === "reset" && m.winnerId) ??
+      lastBracket?.matches.find((m) => m.bracketSide === "grand" && m.winnerId) ??
+      lastBracket?.matches.find((m) => !m.nextMatchId && m.winnerId);
+    if (grand?.winnerId) {
+      const champTeam = [...msi.teams, ...(msi.formerTeams ?? [])].find((t) => t.id === grand.winnerId);
+      if (champTeam) {
+        const reg = normalizeRegion(champTeam.region || inferTeamRegion(champTeam.name));
+        if (reg && reg !== "OUTROS") {
+          return { region: reg, teamName: champTeam.name, season: msi.season || "" };
+        }
+      }
+    }
+  }
+
+  // 2. Histórico arquivado das edições do MSI (mais recente por savedAt)
+  for (const msi of msiChamps) {
+    const sorted = [...(msi.history ?? [])].sort(
+      (a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime(),
+    );
+    const lastEntry = sorted[0];
     if (lastEntry?.teamName) {
       const reg = normalizeRegion(
         msi.teams.find((t) => t.name.toLowerCase() === lastEntry.teamName.toLowerCase())?.region ||
@@ -1433,7 +1455,7 @@ export function getMsiChampionBonusRegion(
     }
   }
 
-  // 2. Fallback: último título do MSI no Hall da Fama
+  // 3. Fallback: último título do MSI no Hall da Fama
   const msiTitles = (career?.titles ?? []).filter(
     (t) => (t.game ?? "lol") === game && detectEliteEventType(t.champName) === "msi",
   );

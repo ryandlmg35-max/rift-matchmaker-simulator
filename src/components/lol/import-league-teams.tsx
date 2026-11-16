@@ -5,7 +5,12 @@ import type { Team } from "@/lib/lol/types";
 import { uid } from "@/lib/lol/generate";
 import { seriesRanking } from "@/lib/lol/promotion";
 import { TeamLogo } from "./team-logo";
-import { computeRegionSlots, normalizeRegion, getOfficialRegionRanking } from "@/lib/lol/international";
+import {
+  computeRegionSlots,
+  getMsiChampionBonusRegion,
+  getOfficialRegionRanking,
+  normalizeRegion,
+} from "@/lib/lol/international";
 import { getChampionshipRegionNorm } from "@/lib/lol/circuit";
 
 function getTargetCountFor(
@@ -13,6 +18,7 @@ function getTargetCountFor(
   region: string,
   isTop2: boolean,
   slotInfo?: { worlds?: number; msi?: number },
+  msiBonusRegion?: string,
 ): { to: number; label: string; tagBadge: string; isDynamic: boolean } {
   const target = (targetName ?? "").toLowerCase();
 
@@ -40,16 +46,22 @@ function getTargetCountFor(
     };
   }
 
-  // 3. Worlds: Vagas dinâmicas de Worlds do coeficiente de momento
+  // 3. Worlds: Vagas dinâmicas de Worlds do coeficiente de momento + 1 vaga do campeão do MSI
   if (target.includes("world") || target.includes("mundial")) {
-    const to =
+    const baseTo =
       slotInfo?.worlds && slotInfo.worlds > 0
         ? slotInfo.worlds
         : (["LCK", "LPL"].includes(region) ? 4 : ["LEC", "LCS"].includes(region) ? 3 : 2);
+    const hasMsiBonus = !!msiBonusRegion && normalizeRegion(region) === normalizeRegion(msiBonusRegion);
+    const to = baseTo + (hasMsiBonus ? 1 : 0);
     return {
       to,
-      label: `${to} vaga(s) da ${region} (Coeficiente de Momento)`,
-      tagBadge: `MUNDIAL: ${to} VAGA(S) (MOMENTO)`,
+      label: hasMsiBonus
+        ? `${to} vaga(s) da ${region} (${baseTo} do ranking + 1 Passaporte MSI)`
+        : `${to} vaga(s) da ${region} (Coeficiente de Momento)`,
+      tagBadge: hasMsiBonus
+        ? `MUNDIAL: ${to} VAGA(S) (+1 MSI)`
+        : `MUNDIAL: ${to} VAGA(S) (MOMENTO)`,
       isDynamic: true,
     };
   }
@@ -193,6 +205,10 @@ export function ImportLeagueTeams({
     return computeRegionSlots(career, game as "lol" | "cs2", allActiveRegions);
   }, [career, game, allActiveRegions]);
 
+  const msiBonus = useMemo(() => {
+    return getMsiChampionBonusRegion(career, championships, game as "lol" | "cs2");
+  }, [career, championships, game]);
+
   // Detect source championship's region
   const sourceRegion = useMemo(() => {
     if (!source) return "";
@@ -209,8 +225,14 @@ export function ImportLeagueTeams({
   }, [sourceRank]);
 
   const targetInfo = useMemo(() => {
-    return getTargetCountFor(currentChampName, sourceRegion || "Região", isTop2Region, slotTable.get(sourceRegion));
-  }, [currentChampName, sourceRegion, isTop2Region, slotTable]);
+    return getTargetCountFor(
+      currentChampName,
+      sourceRegion || "Região",
+      isTop2Region,
+      slotTable.get(sourceRegion),
+      msiBonus?.region,
+    );
+  }, [currentChampName, sourceRegion, isTop2Region, slotTable, msiBonus]);
 
   const changeSource = (id: string) => {
     setSourceId(id);
@@ -220,7 +242,13 @@ export function ImportLeagueTeams({
       const reg = getChampionshipRegionNorm(s);
       const rankEntry = officialRanking.find((r) => r.region === reg);
       const top2 = rankEntry?.isTop2 ?? false;
-      const info = getTargetCountFor(currentChampName, reg, top2, slotTable.get(reg));
+      const info = getTargetCountFor(
+        currentChampName,
+        reg,
+        top2,
+        slotTable.get(reg),
+        msiBonus?.region,
+      );
       setFrom(1);
       setTo(info.to);
       const r = seriesRanking(s.phases, s.teams);
