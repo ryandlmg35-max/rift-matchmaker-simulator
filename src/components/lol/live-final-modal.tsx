@@ -616,8 +616,8 @@ export function LiveFinalModal({
 
     const findSeed = (team: Team): number | null => {
       if (!isCurrentIntl) {
-        const ranked = seriesRanking(championship.teams, championship.phases);
-        const idx = ranked.findIndex((r) => r.teamId === team.id);
+        const ranked = seriesRanking(championship.phases, championship.teams);
+        const idx = ranked.findIndex((r) => r.id === team.id);
         return idx >= 0 ? idx + 1 : null;
       }
       const normName = team.name.trim().toLowerCase();
@@ -637,8 +637,8 @@ export function LiveFinalModal({
       for (const league of localLeagues) {
         const localTeam = league.teams.find((t) => t.name.trim().toLowerCase() === normName);
         if (!localTeam) continue;
-        const ranked = seriesRanking(league.teams, league.phases);
-        const idx = ranked.findIndex((r) => r.teamId === localTeam.id);
+        const ranked = seriesRanking(league.phases, league.teams);
+        const idx = ranked.findIndex((r) => r.id === localTeam.id);
         if (idx >= 0) return idx + 1;
       }
       return null;
