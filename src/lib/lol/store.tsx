@@ -1873,9 +1873,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const hasAnyLolIntl = next.some(
         (c) => (c.game ?? "lol") === "lol" && isInternationalChamp(c),
       );
+      // Limpa eventuais títulos pré-2026 da vida real que foram injetados na versão anterior
+      const cleanSeedDates = (iso?: string) =>
+        !!iso && /^20(1[1-9]|2[0-5])-.*T12:00:00\.000Z$/.test(iso);
+      next = next.map((c) => {
+        if ((c.game ?? "lol") !== "lol" || !isInternationalChamp(c)) return c;
+        const filteredHist = (c.history ?? []).filter((h) => !cleanSeedDates(h.savedAt));
+        return filteredHist.length !== (c.history ?? []).length
+          ? { ...c, history: filteredHist }
+          : c;
+      });
       if (!window.localStorage.getItem(LOL_INTL_SEED_FLAG) || !hasAnyLolIntl) {
         next = ensureDefaultLoLInternationalChampionships(next, careerRef.current);
         window.localStorage.setItem(LOL_INTL_SEED_FLAG, "1");
+      } else {
+        next = ensureDefaultLoLInternationalChampionships(next, careerRef.current);
       }
     } catch {
       /* ignore */
@@ -1903,44 +1915,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           titles: hasCs2Titles ? existingTitles : [...initCs2.titles, ...existingTitles],
         };
       };
-      const syncLolIntlHistoryToTitles = (ledger: CareerLedger, list: Championship[]): CareerLedger => {
-        const existing = [...(ledger.titles ?? [])];
-        const seenTitleKeys = new Set(
-          existing.map(
-            (t) =>
-              `${t.game ?? "lol"}|${normKey(canonicalTournamentName(t.champName))}|${normKey(t.label)}|${normKey(t.teamName)}`,
-          ),
-        );
-        let added = false;
-        for (const c of list) {
-          if ((c.game ?? "lol") !== "lol" || !isInternationalChamp(c)) continue;
-          const canon = canonicalTournamentName(c.name);
-          for (const h of c.history ?? []) {
-            const label = (h.splitLabel || "").trim();
-            const k = `lol|${normKey(canon)}|${normKey(label)}|${normKey(h.teamName)}`;
-            if (seenTitleKeys.has(k)) continue;
-            seenTitleKeys.add(k);
-            existing.push({
-              champName: canon,
-              label: label || "Edição Oficial",
-              teamName: h.teamName,
-              teamTag: h.teamTag,
-              teamLogo: h.teamLogo,
-              at: h.savedAt,
-              game: "lol",
-            });
-            added = true;
-          }
-        }
-        return added ? { ...ledger, titles: existing } : ledger;
+      const stripRealLifeSeedTitles = (ledger: CareerLedger): CareerLedger => {
+        const isSeededRl = (t: CareerTitle) =>
+          (t.game ?? "lol") === "lol" &&
+          t.points === undefined &&
+          /^20(1[1-9]|2[0-5])-.*T12:00:00\.000Z$/.test(t.at || "");
+        const prevTitles = ledger.titles ?? [];
+        const cleaned = prevTitles.filter((t) => !isSeededRl(t));
+        return cleaned.length !== prevTitles.length ? { ...ledger, titles: cleaned } : ledger;
       };
       if (!window.localStorage.getItem(CAREER_SEED_FLAG)) {
-        setCareer(syncLolIntlHistoryToTitles(seedCs2IfEmpty(seedCareer(next)), next));
+        setCareer(stripRealLifeSeedTitles(seedCs2IfEmpty(seedCareer(next))));
         window.localStorage.setItem(CAREER_SEED_FLAG, "1");
       } else {
-        setCareer((prev) =>
-          syncLolIntlHistoryToTitles(seedCs2IfEmpty(backfillIntlHistory(prev, next)), next),
-        );
+        setCareer((prev) => stripRealLifeSeedTitles(seedCs2IfEmpty(backfillIntlHistory(prev, next))));
       }
     } catch {
       /* ignore */
