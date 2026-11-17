@@ -344,6 +344,40 @@ export interface CareerIntlPlayer {
   retired?: boolean;
 }
 
+export interface ClubOffer {
+  id: string;
+  fromTeamName: string;
+  fromTeamTag?: string;
+  fromRegion?: string;
+  playerIgn: string;
+  playerRole: PlayerRole;
+  amount: number;
+  createdAt: string;
+  isBiggerClub?: boolean;
+}
+
+export interface ClubAlert {
+  id: string;
+  kind: "unhappy_bench" | "unhappy_results" | "rejected_offer" | "sponsor" | "prize";
+  playerIgn?: string;
+  title: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface ControlledClubState {
+  game: GameId;
+  teamName: string;
+  /** Caixa real do clube em K dólares. */
+  cash: number;
+  sponsorName: string;
+  sponsorPerSplit: number;
+  offers: ClubOffer[];
+  alerts: ClubAlert[];
+  ledgerLog?: { id: string; label: string; delta: number; at: string }[];
+  claimedRewards?: Record<string, true>;
+}
+
 /**
  * RANKING DE CARREIRA (permanente): créditos de pontos/títulos por time,
  * por jogo. Uma vez creditado, NUNCA é recalculado — resetar campeonatos,
@@ -366,6 +400,8 @@ export interface CareerLedger {
   intlHistory?: Record<string, IntlEditionRecord[]>;
   /** Registro permanente de conquistas e MVPs internacionais de jogadores (LoL GOATs). */
   intlPlayers?: Record<string, CareerIntlPlayer>;
+  /** Clube assumido e controlado pelo usuário (apenas 1 por vez). */
+  controlledClub?: ControlledClubState;
   /** Créditos já aplicados (idempotência: mesma partida/vencedor não credita 2x). */
   seen?: Record<string, true>;
   /** Controle do teto máximo de pontos (+7) ganho por time em cada edição de liga doméstica. */

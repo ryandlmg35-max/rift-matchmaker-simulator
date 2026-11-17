@@ -42,6 +42,14 @@ import {
 } from "./generate";
 import { electMatchMvp } from "./mvp";
 import {
+  addClubCashDelta,
+  applyControlledMatchOutcome,
+  applyControlledPlacementReward,
+  applyControlledSplitSponsor,
+  initControlledClub,
+  normClubKey,
+} from "./club-control";
+import {
   canonicalTournamentName,
   ensureInternationalHost,
   extractSeasonFromChampName,
@@ -1144,6 +1152,12 @@ interface StoreCtx {
     nextRoster: Player[],
     opts?: { removePlayerIgnFromOthers?: string },
   ) => void;
+  /** Assume o controle exclusivo de um único clube (não permite controlar outro até sair). */
+  claimControlledClub: (game: GameId, team: Team, isSerieB?: boolean) => boolean;
+  releaseControlledClub: () => void;
+  adjustControlledCash: (delta: number, label: string) => void;
+  respondClubOffer: (offerId: string, accept: boolean) => void;
+  dismissClubAlert: (alertId: string) => void;
   assignSlotTeam: (
     championshipId: string,
     phaseId: string,
@@ -2000,7 +2014,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const isIntlPlayIn = !!phase?.internationalPlayIn;
           if (phase && target && target.teamAId && target.teamBId && !target.bye) {
             const isPlayoff = phase.kind === "bracket";
-            setCareer((prev) => creditMatch(prev, champ, target, winnerId, isPlayoff, isIntlPlayIn));
+            setCareer((prev) => {
+              let next = creditMatch(prev, champ, target, winnerId, isPlayoff, isIntlPlayIn);
+              next = applyControlledMatchOutcome(
+                next,
+                champ,
+                target,
+                winnerId,
+                championshipsRef.current,
+              );
+              return next;
+            });
             // Se for a partida decisiva da Série A: título + vice na carreira (nunca no play-in).
             const lastBracket = !isIntlPlayIn
               ? [...champ.phases].reverse().find((p) => p.kind === "bracket")
@@ -2018,8 +2042,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 const label = (champ.season ?? "Atual").trim() || "Atual";
                 setCareer((prev) => {
                   let next = prev;
-                  if (champion) next = creditBonus(next, champ, "title", label, champion);
-                  if (runnerUp) next = creditBonus(next, champ, "runnerup", label, runnerUp);
+                  if (champion) {
+                    next = creditBonus(next, champ, "title", label, champion);
+                    next = applyControlledPlacementReward(next, champ, "title", champion.name);
+                  }
+                  if (runnerUp) {
+                    next = creditBonus(next, champ, "runnerup", label, runnerUp);
+                    next = applyControlledPlacementReward(next, champ, "runnerup", runnerUp.name);
+                  }
                   return next;
                 });
               }
@@ -2293,14 +2323,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                     isPlayoff,
                     isIntlPlayIn,
                   );
+                  nextCareer = applyControlledMatchOutcome(
+                    nextCareer,
+                    champ,
+                    target,
+                    res.winnerId,
+                    championshipsRef.current,
+                  );
                   if (decisive?.id === res.matchId) {
                     const pool = [...champ.teams, ...(champ.formerTeams ?? [])];
                     const champion = pool.find((t) => t.id === res.winnerId);
                     const loserId = res.winnerId === target.teamAId ? target.teamBId : target.teamAId;
                     const runnerUp = pool.find((t) => t.id === loserId);
                     const label = (champ.season ?? "Atual").trim() || "Atual";
-                    if (champion) nextCareer = creditBonus(nextCareer, champ, "title", label, champion);
-                    if (runnerUp) nextCareer = creditBonus(nextCareer, champ, "runnerup", label, runnerUp);
+                    if (champion) {
+                      nextCareer = creditBonus(nextCareer, champ, "title", label, champion);
+                      nextCareer = applyControlledPlacementReward(
+                        nextCareer,
+                        champ,
+                        "title",
+                        champion.name,
+                      );
+                    }
+                    if (runnerUp) {
+                      nextCareer = creditBonus(nextCareer, champ, "runnerup", label, runnerUp);
+                      nextCareer = applyControlledPlacementReward(
+                        nextCareer,
+                        champ,
+                        "runnerup",
+                        runnerUp.name,
+                      );
+                    }
                   }
                 }
               }
@@ -2671,6 +2724,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           force,
         });
         if (!advance) return c;
+        const club = careerRef.current.controlledClub;
+        if (
+          club &&
+          (c.game ?? "lol") === club.game &&
+          target.kind === "bracket" &&
+          !target.internationalPlayIn
+        ) {
+          const allT = divisionTeams(c, division);
+          const myTeam = allT.find((t) => normClubKey(t.name) === normClubKey(club.teamName));
+          if (myTeam && advance.teamIds.includes(myTeam.id)) {
+            setCareer((prev) =>
+              applyControlledPlacementReward(prev, c, "playoffs", myTeam.name),
+            );
+          }
+        }
         return mapDivisionPhases(c, division, (phases) =>
           phases.map((p) =>
             p.id === targetPhaseId
@@ -2889,6 +2957,174 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           };
         }),
       );
+    },
+    [],
+  );
+
+  const claimControlledClub = useCallback<StoreCtx["claimControlledClub"]>(
+    (game, team, isSerieB = false) => {
+      let claimed = false;
+      setCareer((prev) => {
+        if (prev.controlledClub) return prev;
+        claimed = true;
+        return {
+          ...prev,
+          controlledClub: initControlledClub(game, team, isSerieB, prev),
+        };
+      });
+      return claimed;
+    },
+    [],
+  );
+
+  const releaseControlledClub = useCallback(() => {
+    setCareer((prev) => {
+      if (!prev.controlledClub) return prev;
+      const { controlledClub: _removed, ...rest } = prev;
+      return rest;
+    });
+  }, []);
+
+  const adjustControlledCash = useCallback<StoreCtx["adjustControlledCash"]>((delta, label) => {
+    setCareer((prev) => {
+      if (!prev.controlledClub) return prev;
+      return {
+        ...prev,
+        controlledClub: addClubCashDelta(prev.controlledClub, delta, label),
+      };
+    });
+  }, []);
+
+  const dismissClubAlert = useCallback<StoreCtx["dismissClubAlert"]>((alertId) => {
+    setCareer((prev) => {
+      if (!prev.controlledClub) return prev;
+      return {
+        ...prev,
+        controlledClub: {
+          ...prev.controlledClub,
+          alerts: prev.controlledClub.alerts.filter((a) => a.id !== alertId),
+        },
+      };
+    });
+  }, []);
+
+  const respondClubOffer = useCallback<StoreCtx["respondClubOffer"]>(
+    (offerId, accept) => {
+      const club = careerRef.current.controlledClub;
+      if (!club) return;
+      const offer = club.offers.find((o) => o.id === offerId);
+      if (!offer) return;
+
+      const game = club.game;
+      const myKey = normClubKey(club.teamName);
+      const pKey = normClubKey(offer.playerIgn);
+
+      if (accept) {
+        let soldPlayer: Player | undefined;
+        setChampionships((prev) =>
+          prev.map((c) => {
+            if ((c.game ?? "lol") !== game) return c;
+            const patchList = (teams: Team[]) =>
+              teams.map((t) => {
+                if (normClubKey(t.name) === myKey) {
+                  const found = t.roster?.find((p) => normClubKey(p.ign) === pKey);
+                  if (found) soldPlayer = found;
+                  const nextRoster = (t.roster ?? []).filter((p) => normClubKey(p.ign) !== pKey);
+                  return {
+                    ...t,
+                    roster: nextRoster,
+                    players: nextRoster.filter((p) => !p.sub).map((p) => p.ign),
+                  };
+                }
+                if (normClubKey(t.name) === normClubKey(offer.fromTeamName) && soldPlayer) {
+                  const cur = t.roster ?? [];
+                  if (!cur.some((p) => normClubKey(p.ign) === pKey)) {
+                    const joined: Player = {
+                      ...soldPlayer,
+                      id: uid(),
+                      sub: cur.some((p) => !p.sub && p.role === soldPlayer!.role),
+                      contractSplits: 2,
+                    };
+                    const nextRoster = [...cur, joined];
+                    return {
+                      ...t,
+                      roster: nextRoster,
+                      players: nextRoster.filter((p) => !p.sub).map((p) => p.ign),
+                    };
+                  }
+                }
+                return t;
+              });
+            return {
+              ...c,
+              teams: patchList(c.teams),
+              serieB: c.serieB ? { ...c.serieB, teams: patchList(c.serieB.teams) } : undefined,
+              updatedAt: Date.now(),
+            };
+          }),
+        );
+
+        setCareer((prev) => {
+          if (!prev.controlledClub) return prev;
+          let updatedClub = {
+            ...prev.controlledClub,
+            offers: prev.controlledClub.offers.filter((o) => o.id !== offerId),
+          };
+          updatedClub = addClubCashDelta(
+            updatedClub,
+            offer.amount,
+            `Venda de ${offer.playerIgn} → ${offer.fromTeamName}`,
+          );
+          return { ...prev, controlledClub: updatedClub };
+        });
+      } else {
+        // Recusar proposta: jogador pode ficar insatisfeito se era clube maior ou estrela
+        const willBeUnhappy = offer.isBiggerClub || Math.random() < 0.45;
+        if (willBeUnhappy) {
+          setChampionships((prev) =>
+            prev.map((c) => {
+              if ((c.game ?? "lol") !== game) return c;
+              const dropCulture = (teams: Team[]) =>
+                teams.map((t) =>
+                  normClubKey(t.name) === myKey
+                    ? { ...t, culture: Math.max(15, (t.culture ?? 50) - 4) }
+                    : t,
+                );
+              return {
+                ...c,
+                teams: dropCulture(c.teams),
+                serieB: c.serieB ? { ...c.serieB, teams: dropCulture(c.serieB.teams) } : undefined,
+              };
+            }),
+          );
+        }
+
+        setCareer((prev) => {
+          if (!prev.controlledClub) return prev;
+          const nextAlerts = willBeUnhappy
+            ? [
+                {
+                  id: uid(),
+                  kind: "rejected_offer" as const,
+                  playerIgn: offer.playerIgn,
+                  title: `${offer.playerIgn} frustrado`,
+                  message: `${offer.playerIgn} queria ouvir a proposta de ${offer.fromTeamName} ($${offer.amount}k) e o vestiário sentiu a recusa.`,
+                  createdAt: new Date().toISOString(),
+                },
+                ...prev.controlledClub.alerts,
+              ].slice(0, 6)
+            : prev.controlledClub.alerts;
+
+          return {
+            ...prev,
+            controlledClub: {
+              ...prev.controlledClub,
+              offers: prev.controlledClub.offers.filter((o) => o.id !== offerId),
+              alerts: nextAlerts,
+            },
+          };
+        });
+      }
     },
     [],
   );
@@ -3156,6 +3392,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const { next, externalUpdates } = advanceChampionshipWithGlobalMarket(archived, careerRef.current, prev);
       if (!next) return prev;
       ok = true;
+      setCareer((prevCareer) =>
+        applyControlledSplitSponsor(
+          prevCareer,
+          (next.game ?? "lol") as GameId,
+          `${next.id}:${next.season ?? Date.now()}`,
+        ),
+      );
       let nextList = prev.map((item) => (item.id === championshipId ? next : item));
       if (externalUpdates.length > 0) {
         nextList = applyExternalUpdatesToChampionships(nextList, externalUpdates);
@@ -3199,6 +3442,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const next = buildNextSplitChampionship(archived, careerRef.current, prev);
       if (!next) return prev;
       newId = next.id;
+      setCareer((prevCareer) =>
+        applyControlledSplitSponsor(
+          prevCareer,
+          (next.game ?? "lol") as GameId,
+          `${next.id}:${next.season ?? Date.now()}`,
+        ),
+      );
       return prev.map((item) => (item.id === championshipId ? archived : item)).concat(next);
     });
     return newId;
@@ -3400,6 +3650,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       redrawSwiss,
       updateTeam,
       controlTeamRoster,
+      claimControlledClub,
+      releaseControlledClub,
+      adjustControlledCash,
+      respondClubOffer,
+      dismissClubAlert,
       assignSlotTeam,
       addTeamsToDivision,
       setupSerieB,
@@ -3462,6 +3717,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       redrawSwiss,
       updateTeam,
       controlTeamRoster,
+      claimControlledClub,
+      releaseControlledClub,
+      adjustControlledCash,
+      respondClubOffer,
+      dismissClubAlert,
       assignSlotTeam,
       addTeamsToDivision,
       setupSerieB,

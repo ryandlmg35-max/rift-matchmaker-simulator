@@ -54,11 +54,21 @@ export function TeamProfileDrawer({
   allChampionships?: Championship[];
   onClose: () => void;
 }) {
-  const { championships: storeChampionships, controlTeamRoster } = useStore();
+  const {
+    championships: storeChampionships,
+    career: storeCareer,
+    controlTeamRoster,
+    claimControlledClub,
+    releaseControlledClub,
+    adjustControlledCash,
+    respondClubOffer,
+    dismissClubAlert,
+  } = useStore();
   const effectiveChampionships = allChampionships && allChampionships.length > 0 ? allChampionships : storeChampionships;
   const [activeTab, setActiveTab] = useState<"trophies" | "roster" | "stats" | "history">("trophies");
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [manageMode, setManageMode] = useState(false);
+  const [showClubLedger, setShowClubLedger] = useState(false);
   const [hireMode, setHireMode] = useState<"market" | "custom">("market");
   const [marketFilter, setMarketFilter] = useState<"accessible" | "free" | "all">("accessible");
   const [marketRoleFilter, setMarketRoleFilter] = useState<"all" | PlayerRole>("all");
@@ -118,17 +128,38 @@ export function TeamProfileDrawer({
     return role.toUpperCase();
   };
 
+  const controlledClub = storeCareer.controlledClub;
+  const isMyClub =
+    !!controlledClub &&
+    controlledClub.game === activeGame &&
+    controlledClub.teamName.trim().toLowerCase() === normKey;
+  const anotherClubControlled = !!controlledClub && !isMyClub;
+
   const handleFirePlayer = (playerId: string) => {
+    if (!isMyClub) return;
+    const fired = roster.find((p) => p.id === playerId);
     const next = roster.filter((p) => p.id !== playerId);
     controlTeamRoster(activeGame, liveTeam.name, next);
+    if (fired) {
+      const salary = getPlayerSalary(fired, teamRegionEff, career, activeGame);
+      const saved = Math.round(salary * 0.25);
+      if (saved > 0) {
+        adjustControlledCash(saved, `Economia na dispensa de ${fired.ign}`);
+      }
+    }
   };
 
   const handleToggleSub = (player: Player) => {
+    if (!isMyClub) return;
     const next = roster.map((p) => (p.id === player.id ? { ...p, sub: !p.sub } : p));
     controlTeamRoster(activeGame, liveTeam.name, next);
   };
 
-  const handleHireFromMarket = (candidate: Player) => {
+  const handleHireFromMarket = (item: MarketItem) => {
+    if (!isMyClub) return;
+    const candidate = item.player;
+    const totalCost = item.salary + item.buyout;
+    if (totalCost > availableBudget) return;
     const existingIds = new Set(roster.map((p) => p.ign.trim().toLowerCase()));
     if (existingIds.has(candidate.ign.trim().toLowerCase())) return;
     const hasStarterInRole = roster.some((p) => !p.sub && p.role === candidate.role);
@@ -141,9 +172,16 @@ export function TeamProfileDrawer({
     controlTeamRoster(activeGame, liveTeam.name, [...roster, hired], {
       removePlayerIgnFromOthers: candidate.ign,
     });
+    adjustControlledCash(
+      -totalCost,
+      item.buyout > 0
+        ? `Contratação: ${candidate.ign} ($${item.salary}k + $${item.buyout}k multa)`
+        : `Contratação: ${candidate.ign}`,
+    );
   };
 
   const handleHireCustom = () => {
+    if (!isMyClub) return;
     const ign = customIgn.trim();
     if (!ign || customEstimatedSalary > availableBudget) return;
     const clamped = Math.max(20, Math.min(98, Math.round(customOvr)));
@@ -155,6 +193,7 @@ export function TeamProfileDrawer({
       age: 21,
       sub: hasStarterInRole,
       custom: true,
+      contractSplits: clamped >= 82 ? 3 : 2,
       attrs: {
         mechanics: clamped,
         gameIq: Math.max(20, Math.min(98, clamped - 1)),
@@ -167,6 +206,7 @@ export function TeamProfileDrawer({
       },
     };
     controlTeamRoster(activeGame, liveTeam.name, [...roster, newPlayer]);
+    adjustControlledCash(-customEstimatedSalary, `Contratação: ${ign}`);
     setCustomIgn("");
   };
 
@@ -205,7 +245,9 @@ export function TeamProfileDrawer({
     [roster, liveTeam.region, championship?.region, career, activeGame],
   );
 
-  const availableBudget = Math.max(0, teamBudget - currentPayroll);
+  const availableBudget = isMyClub && controlledClub
+    ? controlledClub.cash
+    : Math.max(0, teamBudget - currentPayroll);
   const teamRegionEff = liveTeam.region || championship?.region;
   const currentStarterImports = useMemo(
     () => starters.filter((p) => isPlayerImport(p, teamRegionEff)).length,
@@ -749,7 +791,7 @@ export function TeamProfileDrawer({
           {/* TAB 2: ELENCO */}
           {activeTab === "roster" && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-extrabold uppercase tracking-wider text-gold">
                     Titulares
@@ -757,23 +799,173 @@ export function TeamProfileDrawer({
                   <span className="rounded border border-border/60 bg-black/30 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
                     Força {currentStrength}
                   </span>
+                  {isMyClub && controlledClub && (
+                    <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-mono font-bold text-emerald-300">
+                      Seu Clube · Caixa ${controlledClub.cash}k
+                    </span>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setManageMode((v) => !v)}
-                  className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-mono transition-colors ${
-                    manageMode
-                      ? "border-gold/60 bg-gold/15 text-gold"
-                      : "border-border/50 bg-transparent text-muted-foreground hover:border-gold/40 hover:text-foreground"
-                  }`}
-                >
-                  <SlidersHorizontal className="h-3 w-3" />
-                  {manageMode ? "Concluir" : "Controlar elenco"}
-                </button>
+
+                {anotherClubControlled ? (
+                  <span className="text-[10px] font-mono text-muted-foreground">
+                    Você controla: <strong className="text-gold">{controlledClub?.teamName}</strong>
+                  </span>
+                ) : !controlledClub ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (claimControlledClub(activeGame, liveTeam, isSerieB)) {
+                        setManageMode(true);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded border border-gold/50 bg-gold/10 px-2 py-1 text-[11px] font-mono text-gold transition-colors hover:bg-gold/20"
+                  >
+                    <SlidersHorizontal className="h-3 w-3" />
+                    Assumir e controlar time
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setManageMode((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-mono transition-colors ${
+                      manageMode
+                        ? "border-gold/60 bg-gold/15 text-gold"
+                        : "border-border/50 bg-transparent text-muted-foreground hover:border-gold/40 hover:text-foreground"
+                    }`}
+                  >
+                    <SlidersHorizontal className="h-3 w-3" />
+                    {manageMode
+                      ? "Concluir"
+                      : `Controlar elenco${
+                          (controlledClub.offers.length + controlledClub.alerts.length) > 0
+                            ? ` (${controlledClub.offers.length + controlledClub.alerts.length})`
+                            : ""
+                        }`}
+                  </button>
+                )}
               </div>
 
-              {manageMode && (
-                <div className="rounded-xl border border-gold/30 bg-card/50 p-3 space-y-2.5">
+              {manageMode && isMyClub && controlledClub && (
+                <div className="space-y-3">
+                  {/* Painel financeiro real do clube (Patrocínio + Premiação + Caixa) */}
+                  <div className="rounded-xl border border-emerald-500/30 bg-card/50 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                      <div>
+                        <span className="text-muted-foreground">Caixa do Clube: </span>
+                        <strong className="text-emerald-300 text-xs">${controlledClub.cash}k</strong>
+                        <span className="mx-2 text-border">|</span>
+                        <span className="text-muted-foreground">
+                          Patrocínio <strong className="text-foreground">{controlledClub.sponsorName}</strong>:{" "}
+                          <strong className="text-gold">+${controlledClub.sponsorPerSplit}k/split</strong>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowClubLedger((v) => !v)}
+                          className="rounded border border-border/60 bg-black/30 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-gold"
+                        >
+                          {showClubLedger ? "Ocultar extrato" : "Extrato"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            releaseControlledClub();
+                            setManageMode(false);
+                          }}
+                          className="rounded border border-blood/40 bg-blood/10 px-2 py-0.5 text-[10px] text-blood hover:bg-blood/20"
+                        >
+                          Deixar cargo
+                        </button>
+                      </div>
+                    </div>
+
+                    {showClubLedger && (controlledClub.ledgerLog?.length ?? 0) > 0 && (
+                      <div className="max-h-32 space-y-1 overflow-y-auto border-t border-border/40 pt-2 text-[10px] font-mono">
+                        {controlledClub.ledgerLog!.map((entry) => (
+                          <div key={entry.id} className="flex items-center justify-between">
+                            <span className="truncate text-muted-foreground">{entry.label}</span>
+                            <span
+                              className={
+                                entry.delta >= 0 ? "text-emerald-300 font-bold" : "text-blood font-bold"
+                              }
+                            >
+                              {entry.delta >= 0 ? `+$${entry.delta}k` : `-$${Math.abs(entry.delta)}k`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Propostas recebidas e Insatisfações do vestiário */}
+                  {(controlledClub.offers.length > 0 || controlledClub.alerts.length > 0) && (
+                    <div className="rounded-xl border border-amber-500/35 bg-amber-500/5 p-3 space-y-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300 block">
+                        Escritório &amp; Vestiário ({controlledClub.offers.length + controlledClub.alerts.length})
+                      </span>
+
+                      {controlledClub.offers.map((offer) => (
+                        <div
+                          key={offer.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gold/40 bg-black/35 px-2.5 py-2 text-xs"
+                        >
+                          <div>
+                            <span className="font-bold text-gold">Proposta por {offer.playerIgn}</span>
+                            <p className="text-[11px] text-muted-foreground">
+                              <strong>{offer.fromTeamName}</strong> oferece{" "}
+                              <strong className="text-emerald-300">+${offer.amount}k</strong> pelo passe.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => respondClubOffer(offer.id, true)}
+                              className="rounded border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/30"
+                            >
+                              Vender
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => respondClubOffer(offer.id, false)}
+                              className="rounded border border-blood/40 bg-blood/15 px-2 py-0.5 text-[10px] font-bold uppercase text-blood hover:bg-blood/25"
+                            >
+                              Recusar
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+
+                      {controlledClub.alerts.map((alert) => (
+                        <div
+                          key={alert.id}
+                          className="flex items-start justify-between gap-2 rounded-lg border border-border/50 bg-black/30 px-2.5 py-2 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <span
+                              className={`font-bold ${
+                                alert.kind === "prize" || alert.kind === "sponsor"
+                                  ? "text-emerald-300"
+                                  : "text-amber-300"
+                              }`}
+                            >
+                              {alert.title}
+                            </span>
+                            <p className="text-[11px] text-muted-foreground">{alert.message}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => dismissClubAlert(alert.id)}
+                            className="shrink-0 rounded border border-border/60 px-2 py-0.5 text-[10px] font-mono text-muted-foreground hover:text-foreground"
+                          >
+                            Ok
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="rounded-xl border border-gold/30 bg-card/50 p-3 space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-gold inline-flex items-center gap-1.5">
                       <UserPlus className="h-3.5 w-3.5" /> Contratar jogador
@@ -923,7 +1115,7 @@ export function TeamProfileDrawer({
                                   {item.status === "accessible" ? (
                                     <button
                                       type="button"
-                                      onClick={() => handleHireFromMarket(item.player)}
+                                      onClick={() => handleHireFromMarket(item)}
                                       className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/25"
                                     >
                                       Contratar
@@ -1036,6 +1228,7 @@ export function TeamProfileDrawer({
                       </div>
                     </div>
                   )}
+                </div>
                 </div>
               )}
 
