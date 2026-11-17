@@ -986,6 +986,21 @@ function ChampionshipPage() {
         ) : currentPhase ? (
           <div className="space-y-6">
             <EliteEventPanel championship={championship} currentPhase={currentPhase} />
+            {/copa global|global open|64 times|grand slam/i.test(championship.name ?? "") && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded border border-cyan-400/50 bg-cyan-500/20 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-cyan-300">
+                    Mega Copa · {championship.teams.length} Clubes
+                  </span>
+                  <span className="font-semibold text-foreground">
+                    O maior torneio em número de clubes da história!
+                  </span>
+                </div>
+                <span className="font-mono text-[11px] text-cyan-200">
+                  Em jogo: Super Premiação ($900k Campeão / $450k Vice / $220k Playoffs) + Pontos Internacionais
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-display text-lg font-semibold uppercase tracking-wider text-foreground">

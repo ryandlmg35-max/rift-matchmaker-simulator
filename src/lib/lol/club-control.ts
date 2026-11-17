@@ -251,18 +251,19 @@ export function applyControlledPlacementReward(
   if (club.claimedRewards?.[rewardKey]) return ledger;
 
   const isElite = !!detectEliteEventType(champ.name);
+  const isGlobalOpen64 = /copa global|global open|64 times|grand slam/i.test(champ.name ?? "");
   const intlLevel = champIntlLevel(champ);
 
   let amount = 0;
   let titleText = "";
   if (kind === "title") {
-    amount = isElite ? 1200 : intlLevel === "minor" ? 650 : 450;
+    amount = isElite ? 1200 : isGlobalOpen64 ? 900 : intlLevel === "minor" ? 650 : 450;
     titleText = `Premiação de Campeão (${champ.name})`;
   } else if (kind === "runnerup") {
-    amount = isElite ? 600 : intlLevel === "minor" ? 320 : 220;
+    amount = isElite ? 600 : isGlobalOpen64 ? 450 : intlLevel === "minor" ? 320 : 220;
     titleText = `Premiação de Vice (${champ.name})`;
   } else {
-    amount = isElite ? 280 : intlLevel === "minor" ? 180 : 120;
+    amount = isElite ? 280 : isGlobalOpen64 ? 220 : intlLevel === "minor" ? 180 : 120;
     titleText = `Bônus de Playoffs (${champ.name})`;
   }
 

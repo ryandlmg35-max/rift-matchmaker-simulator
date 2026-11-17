@@ -24,7 +24,8 @@ import {
   planInternationalField,
   playInStructure,
 } from "./international";
-import { detectLeaguePreset, OFFICIAL_REGION_LOGOS } from "./official-logos";
+import { detectLeaguePreset, getOfficialLogo, OFFICIAL_REGION_LOGOS } from "./official-logos";
+import { REAL_ROSTERS } from "./real-rosters";
 import {
   archiveCompletedChampions,
   buildFreshPhases,
@@ -259,6 +260,50 @@ export const ANNUAL_CIRCUIT: CircuitEventDef[] = [
           defaultBestOf: 3,
           finalBestOf: 5,
           bracketReset: true,
+          mode: "auto",
+        },
+      },
+    ],
+  },
+  {
+    id: "global-open-64",
+    name: "Copa Global de Clubes",
+    shortName: "Copa Global 64",
+    month: 8, // Agosto (entre o Rift Rivals e o Worlds)
+    level: "minor",
+    accentColor: "#06b6d4",
+    logo: OFFICIAL_REGION_LOGOS.GlobalMasters ?? OFFICIAL_REGION_LOGOS.SuperCup,
+    category: "minor",
+    cycle: 3,
+    qualifiesFrom: "Todas as Ligas, Séries A/B e Convidados Globais (64 Clubes)",
+    description:
+      "O maior torneio da história em número de participantes: 64 clubes de todo o mundo! Vale a maior premiação em dinheiro do circuito (+$900k pro campeão), experiência internacional para clubes menores e bônus de vaga na corrida pelo Worlds.",
+    formatSummary: "16 Grupos GSL (64 Times) → Mata-Mata 32 Times (Bo3 / Final Bo5)",
+    matchPatterns: ["copa global", "global open", "64 times", "grand slam"],
+    suggestedTeamCount: 64,
+    buildPhases: () => [
+      {
+        name: "Fase de Grupos Global (16 Grupos)",
+        kind: "groups",
+        config: {
+          kind: "groups",
+          groupCount: 16,
+          format: "gsl",
+          qualifiersPerGroup: 2,
+          bestOf: 1,
+          doubleRoundRobin: false,
+        },
+      },
+      {
+        name: "Mata-Mata Global (32 Times)",
+        kind: "bracket",
+        config: {
+          kind: "bracket",
+          slots: 32,
+          type: "single",
+          defaultBestOf: 3,
+          finalBestOf: 5,
+          bracketReset: false,
           mode: "auto",
         },
       },
@@ -707,6 +752,65 @@ export function pickInternationalTeams(
             region: team.region || reg,
           });
         }
+      }
+    }
+  } else if (def.id === "global-open-64") {
+    // 🌍 COPA GLOBAL DE CLUBES (64 TIMES): junta clubes da Série A, Série B e banco real até 64!
+    const pushIfNew = (team: Team, reg: string) => {
+      if (picked.length >= 64) return;
+      const k = team.name.toLowerCase().trim();
+      if (!k || seenNames.has(k)) return;
+      seenNames.add(k);
+      picked.push({
+        ...team,
+        id: uid(),
+        region: team.region || reg,
+        logo: team.logo || getOfficialLogo(team.name, "lol"),
+      });
+    };
+
+    // 1. Primeiro puxa os times das ligas ativas (Série A) em rodízio entre regiões
+    const queues = officialRegions.map((reg) => ({
+      reg,
+      list: [...(regionalRankings.get(reg) ?? [])],
+    }));
+    let added = true;
+    while (picked.length < 64 && added) {
+      added = false;
+      for (const q of queues) {
+        const next = q.list.shift();
+        if (next) {
+          pushIfNew(next, q.reg);
+          added = true;
+        }
+      }
+    }
+
+    // 2. Depois puxa clubes da Série B das ligas ativas
+    for (const c of existingChamps) {
+      if ((c.game ?? "lol") !== "lol" || !c.serieB) continue;
+      const reg = normalizeRegion(c.region ?? "");
+      for (const t of c.serieB.teams) {
+        if (picked.length >= 64) break;
+        pushIfNew(t, reg);
+      }
+    }
+
+    // 3. Completa até 64 times com clubes reais do banco global (REAL_ROSTERS)
+    for (const [reg, list] of Object.entries(REAL_ROSTERS)) {
+      if (picked.length >= 64) break;
+      for (const st of list) {
+        if (picked.length >= 64) break;
+        pushIfNew(
+          {
+            id: uid(),
+            name: st.name,
+            tag: st.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "CLB",
+            region: reg,
+            players: st.players.filter((p) => !p.sub).map((p) => p.ign),
+          },
+          reg,
+        );
       }
     }
   } else if (def.id === "worlds") {
