@@ -40,8 +40,6 @@ export function EliteEventPanel({
   } | null>(null);
 
   const eventType = detectEliteEventType(championship.name);
-  if (!eventType) return null;
-
   const game = (championship.game ?? "lol") as GameId;
   const { arena, subtitle } = getEliteArena(championship.hostCity, eventType);
 
@@ -54,20 +52,25 @@ export function EliteEventPanel({
   );
 
   const powerRankings = useMemo(
-    () => computeElitePowerRankings(championship, career),
-    [championship, career],
+    () => (eventType ? computeElitePowerRankings(championship, career) : { topFavorites: [], darkHorse: null }),
+    [eventType, championship, career],
   );
 
-  const awards = useMemo(() => computeEliteAwards(championship), [championship]);
+  const awards = useMemo(
+    () => (eventType ? computeEliteAwards(championship) : { champion: null, fmvp: null, allTournament: [], campaignTag: null }),
+    [eventType, championship],
+  );
 
   const canDrawRound1 = useMemo(() => {
-    if (!currentPhase) return false;
+    if (!eventType || !currentPhase) return false;
     const r1 = currentPhase.matches.filter(
       (m) => (m.round ?? 0) === 0 && !m.bye && m.teamAId && m.teamBId,
     );
     if (r1.length < 2) return false;
     return currentPhase.matches.every((m) => !m.winnerId);
-  }, [currentPhase]);
+  }, [eventType, currentPhase]);
+
+  if (!eventType) return null;
 
   const handleProtectedDraw = () => {
     if (!currentPhase) return;

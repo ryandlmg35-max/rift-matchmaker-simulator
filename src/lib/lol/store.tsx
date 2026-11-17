@@ -671,7 +671,7 @@ function creditBonus(
     const rosterTeam = "roster" in team && Array.isArray(team.roster) ? (team as Team) : undefined;
     if (intlTier && rosterTeam && (rosterTeam.roster?.length ?? 0) > 0) {
       const year = extractSeasonYear(canonicalLabel, c.name);
-      const starters = pickStarters(rosterTeam);
+      const starters = pickStarters(rosterTeam.roster ?? []);
       for (const p of starters) {
         const pKey = playerGoatKey(p.ign);
         const seenPKey = `intlplayer:${c.id}:${kind}:${pKey}`;
