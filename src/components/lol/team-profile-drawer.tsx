@@ -28,6 +28,7 @@ import { ensureRoster, pickStarters, playerOverall, rosterStrength } from "@/lib
 import { REAL_ROSTERS } from "@/lib/lol/real-rosters";
 import { CS2_ALL_TEAMS_DB, getCs2TeamRoster } from "@/lib/lol/cs2-seed";
 import {
+  evaluatePlayerTransferInterest,
   getPlayerBuyout,
   getPlayerContractSplits,
   getPlayerSalary,
@@ -327,11 +328,6 @@ export function TeamProfileDrawer({
       }
     }
 
-    const teamPrestige = careerEntry?.rating ?? 50;
-    const teamCulture = liveTeam.culture ?? 50;
-    const hasTitles = (careerEntry?.titles ?? 0) > 0;
-    const teamAvgOvr = currentStrength || 60;
-
     return raw.map(({ player, currentTeam, teamName, isFree }) => {
       const ovr = playerOverall(player);
       const salary = getPlayerSalary(player, teamRegionEff, career, activeGame);
@@ -347,40 +343,28 @@ export function TeamProfileDrawer({
         currentStarterImports + (isImp && !replacingIsImp ? 1 : 0);
 
       let uninterestedReason: string | undefined;
+      let departureNote: string | undefined;
 
-      if (isSerieB && ovr >= 76 && !player.sub) {
-        uninterestedReason = "Não aceita jogar a Série B";
-      } else if (ovr >= 82 && teamCulture < 38 && !hasTitles) {
-        uninterestedReason = "Vestiário em crise para o nível dele";
-      } else if (ovr >= 82) {
-        const minLevel = ovr >= 86 ? ovr - 11 : ovr - 13;
-        if (teamAvgOvr < minLevel && teamPrestige < 58 && !hasTitles) {
-          uninterestedReason = "Exige elenco/prestígio para brigar por título";
-        }
-      }
-
-      if (!uninterestedReason && isImp && ovr >= 80 && teamAvgOvr < 72 && teamPrestige < 54 && teamCulture < 52) {
-        uninterestedReason = "Import de elite exige projeto mais forte";
-      }
-
-      if (!uninterestedReason && isImp && projectedImports > 2) {
+      if (isImp && projectedImports > 2) {
         uninterestedReason = "Limite de 2 imports titulares atingido";
-      }
-
-      if (!uninterestedReason && currentTeam && !player.sub) {
-        const fromStarters = pickStarters(currentTeam.roster ?? []);
-        const fromAvg =
-          fromStarters.length > 0
-            ? fromStarters.reduce((acc, s) => acc + playerOverall(s), 0) / fromStarters.length
-            : 60;
-        const fromPrestige =
-          career?.[activeGame]?.[currentTeam.name.trim().toLowerCase()]?.rating ?? 50;
-        const betterProject =
-          teamAvgOvr >= fromAvg - 2 ||
-          teamPrestige >= fromPrestige + 4 ||
-          teamCulture >= (currentTeam.culture ?? 50) + 10;
-        if (!betterProject) {
-          uninterestedReason = `Prefere seguir no projeto da ${currentTeam.name}`;
+      } else {
+        const evalRes = evaluatePlayerTransferInterest({
+          player,
+          targetTeam: liveTeam,
+          targetStarters: starters,
+          replacedStarter: replacingStarter,
+          fromTeam: currentTeam ?? undefined,
+          fromStarters: currentTeam ? pickStarters(currentTeam.roster ?? []) : undefined,
+          fromRegion: currentTeam?.region,
+          isImport: isImp,
+          isSerieB,
+          career,
+          game: activeGame,
+        });
+        if (!evalRes.accepts) {
+          uninterestedReason = evalRes.rejectionReason;
+        } else {
+          departureNote = evalRes.departureNote;
         }
       }
 
@@ -424,6 +408,7 @@ export function TeamProfileDrawer({
         buyout,
         contractSplits,
         status: "accessible" as const,
+        reason: departureNote,
       };
     });
   }, [

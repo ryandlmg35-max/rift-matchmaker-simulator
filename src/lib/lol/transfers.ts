@@ -769,22 +769,94 @@ function collectUsedIgns(teams: Team[]): Set<string> {
   return used;
 }
 
+export interface PlayerDepartureContext {
+  wantsToLeave: boolean;
+  trappedInWeakMajor: boolean;
+  benchedInMajor: boolean;
+  clubCrisis: boolean;
+  reason?: string;
+}
+
 /**
- * Avalia a VONTADE DO JOGADOR antes de fechar a contratação:
- * o atleta analisa se o time oferece o melhor ambiente para ser campeão e evoluir.
+ * Analisa o contexto de carreira do jogador no clube atual:
+ * - Jogador forte preso em time fraco de liga Major (sem perspectiva de título/Worlds
+ *   e sem vaga nos gigantes da própria liga) quer sair para brilhar em outro lugar.
+ * - Reserva bom em liga Major quer sair para ser titular imediato.
+ * - Jogador em clube em crise (cultura baixa / prestígio baixo) quer novos ares.
  */
-function doesPlayerAcceptMove(params: {
+export function assessPlayerDepartureContext(params: {
+  player: Player;
+  fromTeam?: Team;
+  fromStarters?: Player[];
+  fromRegion?: string;
+  career?: CareerLedger;
+  game: GameId;
+}): PlayerDepartureContext {
+  const { player, fromTeam, fromStarters, fromRegion, career, game } = params;
+  if (!fromTeam) {
+    return {
+      wantsToLeave: false,
+      trappedInWeakMajor: false,
+      benchedInMajor: false,
+      clubCrisis: false,
+    };
+  }
+
+  const pOvr = playerOverall(player);
+  const fromTier = getRegionFinancialTier(fromTeam.region || fromRegion, career, game);
+  const isFromMajor = fromTier === "superteam" || fromTier === "rich";
+  const fromPool = fromStarters && fromStarters.length > 0 ? fromStarters : pickStarters(ensureRoster(fromTeam) ?? []);
+  const fromAvgOvr =
+    fromPool.length > 0
+      ? fromPool.reduce((acc, s) => acc + playerOverall(s), 0) / fromPool.length
+      : 65;
+  const fromPrestige = career?.[game]?.[fromTeam.name.trim().toLowerCase()]?.rating ?? 50;
+  const fromCulture = fromTeam.culture ?? 50;
+
+  const trappedInWeakMajor =
+    isFromMajor &&
+    !player.sub &&
+    pOvr >= 74 &&
+    (fromAvgOvr <= 74 || fromPrestige <= 48 || fromCulture < 42) &&
+    (pOvr >= fromAvgOvr + 2.5 || (pOvr >= 78 && fromPrestige < 52));
+
+  const benchedInMajor = isFromMajor && !!player.sub && pOvr >= 70;
+  const clubCrisis = fromCulture < 36 || fromPrestige < 42;
+  const wantsToLeave = trappedInWeakMajor || benchedInMajor || clubCrisis;
+
+  const reason = trappedInWeakMajor
+    ? `Sem espaço no topo da liga Major — quer sair de ${fromTeam.name} por título/Mundial`
+    : benchedInMajor
+      ? `Reserva em liga Major — busca titularidade`
+      : clubCrisis
+        ? `Busca novos ares após fase ruim de ${fromTeam.name}`
+        : undefined;
+
+  return { wantsToLeave, trappedInWeakMajor, benchedInMajor, clubCrisis, reason };
+}
+
+export interface PlayerTransferInterestResult {
+  accepts: boolean;
+  rejectionReason?: string;
+  departureNote?: string;
+}
+
+/**
+ * Avalia a VONTADE DO JOGADOR com motivo detalhado (usado pela IA e pelo Mercado Manual).
+ */
+export function evaluatePlayerTransferInterest(params: {
   player: Player;
   targetTeam: Team;
   targetStarters: Player[];
-  replacedStarter: Player;
+  replacedStarter?: Player;
   fromTeam?: Team;
   fromStarters?: Player[];
+  fromRegion?: string;
   isImport: boolean;
   isSerieB: boolean;
   career?: CareerLedger;
   game: GameId;
-}): boolean {
+}): PlayerTransferInterestResult {
   const {
     player,
     targetTeam,
@@ -792,6 +864,7 @@ function doesPlayerAcceptMove(params: {
     replacedStarter,
     fromTeam,
     fromStarters,
+    fromRegion,
     isImport,
     isSerieB,
     career,
@@ -803,10 +876,9 @@ function doesPlayerAcceptMove(params: {
   const culture = targetTeam.culture ?? 50;
   const synergy = targetTeam.synergy ?? 10;
 
-  // Força média do novo elenco JÁ contando a entrada do jogador no lugar do titular substituído
-  const projectedStarters = targetStarters
-    .filter((s) => s.id !== replacedStarter.id)
-    .concat(player);
+  const projectedStarters = replacedStarter
+    ? targetStarters.filter((s) => s.id !== replacedStarter.id).concat(player)
+    : targetStarters.filter((s) => s.role !== player.role).concat(player);
   const projectedAvgOvr =
     projectedStarters.reduce((acc, s) => acc + playerOverall(s), 0) /
     Math.max(1, projectedStarters.length);
@@ -815,51 +887,115 @@ function doesPlayerAcceptMove(params: {
   const teamPrestige = careerEntry?.rating ?? 50;
   const hasTitles = (careerEntry?.titles ?? 0) > 0;
 
+  const departure = assessPlayerDepartureContext({
+    player,
+    fromTeam,
+    fromStarters,
+    fromRegion,
+    career,
+    game,
+  });
+
   // 1. Vontade de ser CAMPEÃO (especialmente estrelas e veteranos 24+)
   if (pOvr >= 82 || age >= 25) {
-    // Superestrela não vai pra Série B, a menos que esteja em queda livre (< 76)
-    if (isSerieB && pOvr >= 76) return false;
-    // Vestiário em crise (cultura < 38) afasta estrelas que querem taça
-    if (pOvr >= 82 && culture < 38 && !hasTitles) return false;
-    // Jogador de elite exige elenco competitivo ao redor para poder brigar por título
-    const minTeamLevel = pOvr >= 86 ? pOvr - 11 : pOvr - 13;
-    if (projectedAvgOvr < minTeamLevel && teamPrestige < 58 && !hasTitles) return false;
+    if (isSerieB && pOvr >= 76 && !departure.benchedInMajor) {
+      return { accepts: false, rejectionReason: "Não aceita jogar a Série B" };
+    }
+    if (pOvr >= 82 && culture < 38 && !hasTitles) {
+      return { accepts: false, rejectionReason: "Vestiário em crise para o nível dele" };
+    }
+    const minTeamLevel = departure.wantsToLeave
+      ? Math.max(66, pOvr - 16)
+      : pOvr >= 86
+        ? pOvr - 11
+        : pOvr - 13;
+    if (projectedAvgOvr < minTeamLevel && teamPrestige < 56 && !hasTitles) {
+      return { accepts: false, rejectionReason: "Exige elenco/prestígio para brigar por título" };
+    }
   }
 
   // 2. Vontade de EVOLUIR (jovens <= 22 anos)
   if (age <= 22) {
-    // Jovem precisa de ambiente minimamente saudável e companheiros que agreguem experiência
-    if (culture < 30) return false;
+    if (culture < 30) {
+      return { accepts: false, rejectionReason: "Cultura do clube muito baixa para jovens" };
+    }
     const avgTeammateIq =
       projectedStarters.reduce(
         (acc, s) => acc + getResolvedAttrs(s.attrs, s.ign, s.role, s.country, s.age).gameIq,
         0,
       ) / Math.max(1, projectedStarters.length);
-    // Se o time é muito fraco de macro e tem cultura ruim, o jovem prefere esperar proposta melhor
-    if (avgTeammateIq < 64 && culture < 45 && isSerieB) return false;
+    if (avgTeammateIq < 64 && culture < 45 && isSerieB && !departure.benchedInMajor) {
+      return { accepts: false, rejectionReason: "Prefere esperar projeto mais estruturado" };
+    }
   }
 
-  // 3. Jogador que já está em outro time da liga (troca/compra):
-  // Se era titular lá, só aceita sair se o novo time for projeto igual/melhor (ou cultura muito superior)
-  if (fromTeam && !player.sub && fromStarters && fromStarters.length > 0) {
+  // 3. Comparação com o clube atual (se titular lá)
+  if (fromTeam && !player.sub) {
+    const fromPool = fromStarters && fromStarters.length > 0 ? fromStarters : pickStarters(ensureRoster(fromTeam) ?? []);
     const fromAvgOvr =
-      fromStarters.reduce((acc, s) => acc + playerOverall(s), 0) / fromStarters.length;
+      fromPool.length > 0
+        ? fromPool.reduce((acc, s) => acc + playerOverall(s), 0) / fromPool.length
+        : 60;
     const fromPrestige = career?.[game]?.[fromTeam.name.trim().toLowerCase()]?.rating ?? 50;
+
+    // Se está preso em time ruim de liga Major (ou clube em crise), aceita sair para projeto
+    // vencedor/competitivo em outra liga para disputar Mundial e ser protagonista!
+    const escapedToContender =
+      departure.wantsToLeave &&
+      !isSerieB &&
+      (projectedAvgOvr >= 68 || teamPrestige >= 52 || hasTitles || culture >= 55);
+
     const betterProject =
+      escapedToContender ||
       projectedAvgOvr >= fromAvgOvr - 1.5 ||
       teamPrestige >= fromPrestige + 4 ||
       culture >= (fromTeam.culture ?? 50) + 10 ||
       synergy >= (fromTeam.synergy ?? 10) + 12;
-    if (!betterProject) return false;
+
+    if (!betterProject) {
+      return {
+        accepts: false,
+        rejectionReason: `Prefere seguir no projeto da ${fromTeam.name}`,
+      };
+    }
   }
 
-  // 4. Gringo de alto nível (import) só atravessa o oceano por projeto sólido e chance real de título
+  // 4. Gringo de alto nível (import) só atravessa o oceano por projeto sólido —
+  // mas aceita se estiver preso em time ruim / reserva de liga Major buscando Mundial!
   if (isImport && pOvr >= 80) {
-    if (isSerieB) return false;
-    if (projectedAvgOvr < 73 && teamPrestige < 54 && culture < 52) return false;
+    if (isSerieB) {
+      return { accepts: false, rejectionReason: "Import de elite não joga a Série B" };
+    }
+    const minAvg = departure.wantsToLeave ? 68 : 73;
+    if (projectedAvgOvr < minAvg && teamPrestige < 54 && culture < 52 && !hasTitles) {
+      return { accepts: false, rejectionReason: "Import de elite exige projeto mais forte" };
+    }
   }
 
-  return true;
+  return {
+    accepts: true,
+    departureNote: departure.reason,
+  };
+}
+
+/**
+ * Avalia a VONTADE DO JOGADOR antes de fechar a contratação:
+ * o atleta analisa se o time oferece o melhor ambiente para ser campeão e evoluir.
+ */
+function doesPlayerAcceptMove(params: {
+  player: Player;
+  targetTeam: Team;
+  targetStarters: Player[];
+  replacedStarter: Player;
+  fromTeam?: Team;
+  fromStarters?: Player[];
+  fromRegion?: string;
+  isImport: boolean;
+  isSerieB: boolean;
+  career?: CareerLedger;
+  game: GameId;
+}): boolean {
+  return evaluatePlayerTransferInterest(params).accepts;
 }
 
 function buildExternalLeagues(
@@ -1269,8 +1405,17 @@ function moveSingleTeam(params: {
             const candOvr = playerOverall(p);
             const splits = getPlayerContractSplits(p);
             const buyout = getPlayerBuyout(p, ext.region, career, game);
-            if (isMidSplit && buyout > 0 && !p.sub) continue;
-            if (splits >= 2 && !p.sub && Math.random() < 0.68) continue;
+            const sellerStarters = pickStarters(sellerRoster);
+            const departure = assessPlayerDepartureContext({
+              player: p,
+              fromTeam: seller,
+              fromStarters: sellerStarters,
+              fromRegion: ext.region,
+              career,
+              game,
+            });
+            if (isMidSplit && buyout > 0 && !p.sub && !departure.wantsToLeave) continue;
+            if (splits >= 2 && !p.sub && !departure.wantsToLeave && Math.random() < 0.68) continue;
             if (candOvr <= target.ovr + (buyout > 0 ? 4 : 2)) continue;
 
             const isImp = isPlayerImport(p, region);
@@ -1281,8 +1426,16 @@ function moveSingleTeam(params: {
             if (salary > budget * maxShare) continue;
             if (buyout > 0 && salary + buyout > budget * 0.85) continue;
 
-            // Só tira titular sob contrato de outra liga se tiver dinheiro pra multa + salto salarial
-            if (!p.sub && buyout > 0 && budget <= sellerBudget + Math.max(100, Math.round(buyout * 0.45))) continue;
+            // Se o jogador quer sair (ex: preso em time fraco de Major / reserva), aceita negociar
+            // sem exigir que o comprador seja mais rico que o teto da liga Major!
+            if (
+              !p.sub &&
+              buyout > 0 &&
+              !departure.wantsToLeave &&
+              budget <= sellerBudget + Math.max(100, Math.round(buyout * 0.45))
+            ) {
+              continue;
+            }
 
             if (
               !doesPlayerAcceptMove({
@@ -1291,7 +1444,8 @@ function moveSingleTeam(params: {
                 targetStarters: starters,
                 replacedStarter: target.player,
                 fromTeam: seller,
-                fromStarters: pickStarters(sellerRoster),
+                fromStarters: sellerStarters,
+                fromRegion: ext.region,
                 isImport: isImp,
                 isSerieB,
                 career,
