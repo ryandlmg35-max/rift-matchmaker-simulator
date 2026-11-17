@@ -47,32 +47,77 @@ export function createGroupsForTeams(
   return groups;
 }
 
-/** Round-robin match list for a group. */
+/**
+ * Round-robin match list for groups using the Circle Method (Berger scheduling),
+ * so every team plays at most once per round instead of playing all matches consecutively.
+ */
 export function generateGroupMatches(groups: Group[], bestOf: BestOf, doubleRR: boolean): Match[] {
-  const matches: Match[] = [];
+  const perGroupRounds: Match[][][] = [];
+
   for (const g of groups) {
     const ids = g.teamIds;
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        matches.push({
+    if (ids.length < 2) {
+      perGroupRounds.push([]);
+      continue;
+    }
+
+    const circle: Array<string | null> = ids.length % 2 === 1 ? [...ids, null] : [...ids];
+    const n = circle.length;
+    const totalRounds = n - 1;
+    const half = n / 2;
+    const leg1: Match[][] = [];
+
+    const working = [...circle];
+    for (let r = 0; r < totalRounds; r++) {
+      const roundMatches: Match[] = [];
+      for (let k = 0; k < half; k++) {
+        const a = working[k];
+        const b = working[n - 1 - k];
+        if (!a || !b) continue;
+        const flip = (r + k) % 2 === 1;
+        roundMatches.push({
           id: uid(),
-          teamAId: ids[i],
-          teamBId: ids[j],
+          teamAId: flip ? b : a,
+          teamBId: flip ? a : b,
           winnerId: null,
           bestOf,
+          round: r,
+          roundName: `Rodada ${r + 1}`,
           groupId: g.id,
         });
-        if (doubleRR) {
-          matches.push({
-            id: uid(),
-            teamAId: ids[j],
-            teamBId: ids[i],
-            winnerId: null,
-            bestOf,
-            groupId: g.id,
-          });
-        }
       }
+      leg1.push(roundMatches);
+
+      // Rotaciona mantendo working[0] fixo
+      const last = working.pop()!;
+      working.splice(1, 0, last);
+    }
+
+    if (doubleRR) {
+      const leg2: Match[][] = leg1.map((rm, r) =>
+        rm.map((m) => ({
+          id: uid(),
+          teamAId: m.teamBId,
+          teamBId: m.teamAId,
+          winnerId: null,
+          bestOf,
+          round: totalRounds + r,
+          roundName: `Rodada ${totalRounds + r + 1}`,
+          groupId: g.id,
+        })),
+      );
+      perGroupRounds.push([...leg1, ...leg2]);
+    } else {
+      perGroupRounds.push(leg1);
+    }
+  }
+
+  // Intercala por rodada (Rodada 1 de todos os grupos, depois Rodada 2, etc.)
+  const maxRounds = Math.max(0, ...perGroupRounds.map((gr) => gr.length));
+  const matches: Match[] = [];
+  for (let r = 0; r < maxRounds; r++) {
+    for (const gr of perGroupRounds) {
+      if (gr[r]) matches.push(...gr[r]);
     }
   }
   return matches;
