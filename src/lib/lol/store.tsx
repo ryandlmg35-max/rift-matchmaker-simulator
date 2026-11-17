@@ -65,7 +65,10 @@ import { planPhaseAdvance } from "./advance";
 export { propagateBracketWinner };
 import { buildCs2InitialCareer, buildCs2SeedChampionships, getCs2TeamRoster } from "./cs2-seed";
 import { detectLeaguePreset, getOfficialLogo } from "./official-logos";
-import { advanceInternationalEdition } from "./circuit";
+import {
+  advanceInternationalEdition,
+  ensureDefaultLoLInternationalChampionships,
+} from "./circuit";
 import { compressExistingLogo, deepCompressLogos, getStorageUsage } from "./image";
 import { applyMatchEffects, revertMatchEffects, seasonRecords } from "./momentum";
 import {
@@ -103,6 +106,7 @@ import {
 
 const STORAGE_KEY = "lol-esports-sim:v2";
 const CS2_SEED_FLAG = "lol-esports-sim:cs2-seeded-v3";
+const LOL_INTL_SEED_FLAG = "lol-esports-sim:lol-intl-seeded-v1";
 const CAREER_KEY = "lol-esports-sim:career:v1";
 const CAREER_SEED_FLAG = "lol-esports-sim:career-seeded:v1";
 
@@ -1865,6 +1869,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+    try {
+      const hasAnyLolIntl = next.some(
+        (c) => (c.game ?? "lol") === "lol" && isInternationalChamp(c),
+      );
+      if (!window.localStorage.getItem(LOL_INTL_SEED_FLAG) || !hasAnyLolIntl) {
+        next = ensureDefaultLoLInternationalChampionships(next, careerRef.current);
+        window.localStorage.setItem(LOL_INTL_SEED_FLAG, "1");
+      }
+    } catch {
+      /* ignore */
+    }
     // Primeira execução: migra os campeonatos atuais para a carreira
     // (idempotente pelas chaves de crédito — roda 1x só).
     try {
@@ -1888,11 +1903,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           titles: hasCs2Titles ? existingTitles : [...initCs2.titles, ...existingTitles],
         };
       };
+      const syncLolIntlHistoryToTitles = (ledger: CareerLedger, list: Championship[]): CareerLedger => {
+        const existing = [...(ledger.titles ?? [])];
+        const seenTitleKeys = new Set(
+          existing.map(
+            (t) =>
+              `${t.game ?? "lol"}|${normKey(canonicalTournamentName(t.champName))}|${normKey(t.label)}|${normKey(t.teamName)}`,
+          ),
+        );
+        let added = false;
+        for (const c of list) {
+          if ((c.game ?? "lol") !== "lol" || !isInternationalChamp(c)) continue;
+          const canon = canonicalTournamentName(c.name);
+          for (const h of c.history ?? []) {
+            const label = (h.splitLabel || "").trim();
+            const k = `lol|${normKey(canon)}|${normKey(label)}|${normKey(h.teamName)}`;
+            if (seenTitleKeys.has(k)) continue;
+            seenTitleKeys.add(k);
+            existing.push({
+              champName: canon,
+              label: label || "Edição Oficial",
+              teamName: h.teamName,
+              teamTag: h.teamTag,
+              teamLogo: h.teamLogo,
+              at: h.savedAt,
+              game: "lol",
+            });
+            added = true;
+          }
+        }
+        return added ? { ...ledger, titles: existing } : ledger;
+      };
       if (!window.localStorage.getItem(CAREER_SEED_FLAG)) {
-        setCareer(seedCs2IfEmpty(seedCareer(next)));
+        setCareer(syncLolIntlHistoryToTitles(seedCs2IfEmpty(seedCareer(next)), next));
         window.localStorage.setItem(CAREER_SEED_FLAG, "1");
       } else {
-        setCareer((prev) => seedCs2IfEmpty(backfillIntlHistory(prev, next)));
+        setCareer((prev) =>
+          syncLolIntlHistoryToTitles(seedCs2IfEmpty(backfillIntlHistory(prev, next)), next),
+        );
       }
     } catch {
       /* ignore */

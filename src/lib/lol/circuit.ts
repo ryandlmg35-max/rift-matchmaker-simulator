@@ -1,5 +1,6 @@
 import type {
   CareerLedger,
+  ChampionHistoryEntry,
   Championship,
   DraftPhase,
   GameId,
@@ -980,4 +981,126 @@ export function advanceInternationalEdition(
     history: archived.history ?? [],
     updatedAt: Date.now(),
   };
+}
+
+interface HistoricalIntlSeed {
+  splitLabel: string;
+  teamName: string;
+  teamTag: string;
+  savedAt: string;
+}
+
+export const HISTORICAL_INTL_CHAMPIONS: Record<string, HistoricalIntlSeed[]> = {
+  worlds: [
+    { splitLabel: "2025", teamName: "T1", teamTag: "T1", savedAt: "2025-11-09T12:00:00.000Z" },
+    { splitLabel: "2024", teamName: "T1", teamTag: "T1", savedAt: "2024-11-02T12:00:00.000Z" },
+    { splitLabel: "2023", teamName: "T1", teamTag: "T1", savedAt: "2023-11-19T12:00:00.000Z" },
+    { splitLabel: "2022", teamName: "DRX", teamTag: "DRX", savedAt: "2022-11-06T12:00:00.000Z" },
+    { splitLabel: "2021", teamName: "EDward Gaming", teamTag: "EDG", savedAt: "2021-11-06T12:00:00.000Z" },
+    { splitLabel: "2020", teamName: "Dplus KIA", teamTag: "DK", savedAt: "2020-10-31T12:00:00.000Z" },
+    { splitLabel: "2019", teamName: "FunPlus Phoenix", teamTag: "FPX", savedAt: "2019-11-10T12:00:00.000Z" },
+    { splitLabel: "2018", teamName: "Invictus Gaming", teamTag: "IG", savedAt: "2018-11-03T12:00:00.000Z" },
+    { splitLabel: "2017", teamName: "Gen.G", teamTag: "GEN", savedAt: "2017-11-04T12:00:00.000Z" },
+    { splitLabel: "2016", teamName: "T1", teamTag: "T1", savedAt: "2016-10-30T12:00:00.000Z" },
+    { splitLabel: "2015", teamName: "T1", teamTag: "T1", savedAt: "2015-10-31T12:00:00.000Z" },
+    { splitLabel: "2014", teamName: "Samsung White", teamTag: "SSW", savedAt: "2014-10-19T12:00:00.000Z" },
+    { splitLabel: "2013", teamName: "T1", teamTag: "T1", savedAt: "2013-10-05T12:00:00.000Z" },
+    { splitLabel: "2012", teamName: "Taipei Assassins", teamTag: "TPA", savedAt: "2012-10-14T12:00:00.000Z" },
+    { splitLabel: "2011", teamName: "Fnatic", teamTag: "FNC", savedAt: "2011-06-20T12:00:00.000Z" },
+  ],
+  msi: [
+    { splitLabel: "2025", teamName: "Gen.G", teamTag: "GEN", savedAt: "2025-07-13T12:00:00.000Z" },
+    { splitLabel: "2024", teamName: "Gen.G", teamTag: "GEN", savedAt: "2024-05-19T12:00:00.000Z" },
+    { splitLabel: "2023", teamName: "JD Gaming", teamTag: "JDG", savedAt: "2023-05-21T12:00:00.000Z" },
+    { splitLabel: "2022", teamName: "Royal Never Give Up", teamTag: "RNG", savedAt: "2022-05-29T12:00:00.000Z" },
+    { splitLabel: "2021", teamName: "Royal Never Give Up", teamTag: "RNG", savedAt: "2021-05-23T12:00:00.000Z" },
+    { splitLabel: "2019", teamName: "G2 Esports", teamTag: "G2", savedAt: "2019-05-19T12:00:00.000Z" },
+    { splitLabel: "2018", teamName: "Royal Never Give Up", teamTag: "RNG", savedAt: "2018-05-20T12:00:00.000Z" },
+    { splitLabel: "2017", teamName: "T1", teamTag: "T1", savedAt: "2017-05-21T12:00:00.000Z" },
+    { splitLabel: "2016", teamName: "T1", teamTag: "T1", savedAt: "2016-05-15T12:00:00.000Z" },
+    { splitLabel: "2015", teamName: "EDward Gaming", teamTag: "EDG", savedAt: "2015-05-10T12:00:00.000Z" },
+  ],
+  "first-stand": [
+    { splitLabel: "2025", teamName: "Hanwha Life Esports", teamTag: "HLE", savedAt: "2025-03-16T12:00:00.000Z" },
+  ],
+};
+
+function buildHistoryEntriesForDef(defId: string): ChampionHistoryEntry[] {
+  const seeds = HISTORICAL_INTL_CHAMPIONS[defId] ?? [];
+  return seeds.map((s) => ({
+    id: uid(),
+    teamName: s.teamName,
+    teamTag: s.teamTag,
+    teamLogo: getOfficialLogo(s.teamName, "lol"),
+    splitLabel: s.splitLabel,
+    savedAt: s.savedAt,
+  }));
+}
+
+/**
+ * Garante que todos os campeonatos internacionais oficiais do LoL existam por padrão
+ * (prontos para só puxar os times e avançar edições) e com o histórico de campeões reais.
+ */
+export function ensureDefaultLoLInternationalChampionships(
+  existing: Championship[],
+  career?: CareerLedger,
+  year = 2026,
+): Championship[] {
+  const result = [...existing];
+  const lolChamps = result.filter((c) => (c.game ?? "lol") === "lol");
+
+  for (const def of ANNUAL_CIRCUIT) {
+    const existingIdx = result.findIndex((c) => {
+      if ((c.game ?? "lol") !== "lol") return false;
+      const lower = c.name.toLowerCase();
+      return (
+        def.matchPatterns.some((p) => lower.includes(p)) ||
+        lower.includes(def.shortName.toLowerCase()) ||
+        lower.includes(def.name.toLowerCase())
+      );
+    });
+
+    if (existingIdx >= 0) {
+      const cur = result[existingIdx];
+      if (!cur.history || cur.history.length === 0) {
+        const seedHist = buildHistoryEntriesForDef(def.id);
+        if (seedHist.length > 0) {
+          result[existingIdx] = { ...cur, history: seedHist };
+        }
+      }
+      continue;
+    }
+
+    // Cria o torneio internacional oficial configurado, pronto para o usuário puxar os times
+    const fullName = `${def.name} ${year}`;
+    const phases: Phase[] = def.buildPhases().map((p) => ({
+      id: uid(),
+      name: p.name,
+      kind: p.kind,
+      config: adaptPlayoffConfig(p.config, 0),
+      matches: [],
+      seededTeamIds: [],
+    }));
+    const venue = pickInternationalHost(fullName, "lol", `${year}`, career);
+    const created: Championship = {
+      id: uid(),
+      name: fullName,
+      game: "lol",
+      region: "Internacional",
+      season: `${year}`,
+      logo: def.logo,
+      accentColor: def.accentColor,
+      teams: [],
+      phases,
+      countsTowardsRanking: def.id !== "world-cup",
+      internationalLevel: def.level,
+      scheduledMonth: def.month,
+      history: buildHistoryEntriesForDef(def.id),
+      ...venue,
+      updatedAt: Date.now() - lolChamps.length,
+    };
+    result.push(created);
+  }
+
+  return result;
 }
