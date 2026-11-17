@@ -1798,22 +1798,30 @@ function load(): Championship[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as Championship[];
-    // Legacy migration: pre-CS2 championships default to LoL; old division
-    // tags are split into the standalone `serieB` block.
-    const migrated = parsed.map((c) => {
-      const base = ensureInternationalHost(
-        ensureTeamLogos(ensureTeamRosters(migrateChampionship({ ...c, game: c.game ?? "lol" }))),
-      );
-      return {
-        ...base,
-        history: deduplicateHistoryList(base.history),
-        serieB: base.serieB
-          ? { ...base.serieB, history: deduplicateHistoryList(base.serieB.history) }
-          : base.serieB,
-      };
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const migrated = parsed.map((rawChamp) => {
+      const c = rawChamp as Championship;
+      try {
+        const base = ensureInternationalHost(
+          ensureTeamLogos(ensureTeamRosters(migrateChampionship({ ...c, game: c.game ?? "lol" }))),
+        );
+        return {
+          ...base,
+          history: deduplicateHistoryList(base.history),
+          serieB: base.serieB
+            ? { ...base.serieB, history: deduplicateHistoryList(base.serieB.history) }
+            : base.serieB,
+        };
+      } catch {
+        return { ...c, game: c.game ?? "lol" };
+      }
     });
-    return sanitizeLegacyClonedRosters(migrated).map(deduplicateChampionshipRosters);
+    try {
+      return sanitizeLegacyClonedRosters(migrated).map(deduplicateChampionshipRosters);
+    } catch {
+      return migrated;
+    }
   } catch {
     return [];
   }
